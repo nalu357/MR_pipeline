@@ -69,8 +69,8 @@ The script will generate files in the directory specified by the `--out_prefix` 
 
 *   `_harmonized_data.rds`: An R Data Serializable file containing the harmonized data frame used for the MR analysis.
 *   `_full_mr_results.tsv`: A tab-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run).
-*   `_processed_mr_results.tsv`: (To be implemented) A summary file potentially highlighting key results and flags based on sensitivity tests.
-*   `_exposure_ivs.tsv`: (To be implemented) A file listing the genetic variants selected as instruments for the exposure after clumping and F-statistic filtering.
+*   `all_processed_mr_results.tsv`: A summary file of all processed results and flags based on sensitivity tests.
+*   `_exposure_ivs.tsv`: A file listing the genetic variants selected as instruments for the exposure after clumping and F-statistic filtering.
 
 ## Usage Example Single Exposure, Single Outcome
 
