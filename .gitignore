@@ -1,0 +1,8 @@
+test*.tsv
+test*.rds
+plink
+test_output/
+prettify
+test_outcome/
+test_exposure/
+Rpackages/
