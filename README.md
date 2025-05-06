@@ -1,11 +1,10 @@
-# Mendelian Randomization Pipeline (mr_pipeline.R)
+# Mendelian Randomization Pipeline
 
 ## Purpose
 
-This R script performs a standard two-sample Mendelian Randomization (MR) analysis. It takes GWAS summary statistics for an exposure and an outcome, selects genetic instruments for the exposure using LD clumping, harmonizes the data, runs various MR methods, performs sensitivity analyses, and outputs the results. It is designed to be flexible and efficient, supporting the following scenarios:
+This R-based pipeline performs a standard two-sample Mendelian Randomization (MR) analysis. It takes GWAS summary statistics for an exposure and an outcome, selects genetic instruments for the exposure using LD clumping, harmonizes the data, runs various MR methods, performs sensitivity analyses, and outputs the results. It is designed to be flexible and efficient, supporting the following scenarios:
 
 - **Single exposure, single outcome:** Analyze one exposure-outcome pair.
-- **Single exposure, multiple outcomes:** Analyze one exposure against all outcome files in a directory, efficiently reusing the exposure instruments.
 - **Multiple exposures, multiple outcomes:** Use a shell loop to analyze all exposures in a directory against all outcomes in another directory.
 ## Dependencies
 
@@ -114,9 +113,7 @@ Rscript pipeline_scripts/mr_pipeline.R \
 
 *Adjust file paths, column names (`--exp_*`, `--out_*`), and parameters as needed.*
 
-## Further Usage Scenarios
-
-### Multiple Exposures, Multiple Outcomes
+## Usage Example Multiple Exposures, Multiple Outcomes
 
 Place all your outcome GWAS files (e.g., `.tsv` files) in a single directory (e.g., `outcomes/`).  Place all your exposure GWAS files (e.g., `.tsv` files) in a single directory (e.g., `exposures/`).  
 Run:
@@ -154,7 +151,7 @@ Run :
 Rscript pipeline_scripts/mr_pipeline.R \
   --exposure_dir qtl_exposures/ \
   --outcome_dir outcomes/ \
-  --out_prefix output/qtl_vs_ \
+  --out_prefix output/ \
   --skip_clump \
   [other arguments as needed]
 ```
