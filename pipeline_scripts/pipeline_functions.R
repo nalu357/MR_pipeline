@@ -430,8 +430,9 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   
   harmonized_file <- paste0(out_prefix, "_harmonized_data.rds")
   saveRDS(harmonized_dat, file = harmonized_file)
-  results_file <- paste0(out_prefix, "_full_mr_results.tsv")
-  data.table::fwrite(mr_results_dt, results_file, sep = "\t", na = "NA")
+  
+  results_file <- paste0(out_prefix, "_full_mr_results.csv")
+  data.table::fwrite(mr_results_dt, results_file, sep = ",", na = "NA")
   message(sprintf("Saved results to: %s", results_file))
   return(mr_results_dt)
 }
@@ -449,108 +450,125 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
 #' @param all_mr_results data.table. Combined MR results for all exposure-outcome pairs.
 #'
 #' @return data.table. Prettified and annotated MR results, one row per exposure-outcome-method, and writes the summary to disk.
-process_mr_results <- function(all_mr_results) {
+process_mr_results <- function(all_mr_results, opt) {
   all_mr_results <- as.data.table(all_mr_results)
+  all_mr_results[, id.exposure:=NULL]
+  all_mr_results[, id.outcome:=NULL]
+  all_mr_results[, lo_ci:=NULL]
+  all_mr_results[, up_ci:=NULL]	
+  all_mr_results[, egger_intercept:=NULL]	
+  all_mr_results[, egger_intercept_se:=NULL]	
   
-  # Subset IVW and Wald ratio results
-  all_mr_results.IVW <- all_mr_results[method == "Inverse variance weighted" & nsnp > 2]
-  all_mr_results.wald <- all_mr_results[method == "Wald ratio"]
-  
-  # Prepare output
-  all_mr_results.all <- data.table()
-  
-  # Loop over unique outcome/ancestry combinations
-  for (out in unique(all_mr_results$outcome)) {
-    for (exp in unique(all_mr_results$exposure)) {
-      # MR Egger intercept FDR
-      all_mr_results.MREgger <- all_mr_results[outcome == out & exposure == exp & method == "MR Egger"]
-      all_mr_results.MREgger[, pval_fdr := p.adjust(egger_intercept_pval, method = "fdr")]
-      MREgger.sig <- all_mr_results.MREgger[pval_fdr < 0.05]
-      
-      # Heterogeneity flag
-      #Compute the I2 statistics
-      all_mr_results.IVW$I2 <- (all_mr_results.IVW$Q-all_mr_results.IVW$Q_df)/all_mr_results.IVW$Q
-      Het.sig <- all_mr_results.IVW[outcome == out & exposure == exp & I2 > 0.5]
-      
-      # Steiger directionality difference
-      if("mr_ivw_steiger" %in% unique(all_mr_results$method)){
-        steiger_methods <- c("mr_ivw_steiger", "Inverse variance weighted")
-        steiger_dt <- all_mr_results[outcome == out & exposure == exp & method %in% steiger_methods, .(b)]
-        Steiger.diff <- length(unique(sign(steiger_dt$b))) > 1
-      }
-      else Steiger.diff <- NA
-      
-      # Precompute sensitivity betas for all clusters
-      get_beta <- function(dt, m) if (nrow(dt[method == m]) > 0) dt[method == m, b] else NA
-      
-      tmp.res <- all_mr_results[outcome == out & exposure == exp]
-      if (nrow(tmp.res) == 0) next
-      
-      # Sensitivity betas
-      if(any(grepl(all_mr_results$method, pattern = "mr_presso")) & "mr_ivw_steiger" %in% unique(all_mr_results$method)){
-        beta.sensitivity <- list(
-          MRPRESSO = if ("mr_presso_corrected" %in% tmp.res$method) {
-            dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
-            dval <- ifelse(dval == "<0.001", 1e-4, as.numeric(dval))
-            if (!is.na(dval) && dval < 0.05) tmp.res[method == "mr_presso_corrected", b]
-            else tmp.res[method == "mr_presso_raw", b]
-          } else NA,
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median"),
-          Steiger = get_beta(tmp.res, "mr_ivw_steiger")
-        )
-      }
-      else if(!any(grepl(all_mr_results$method, pattern = "mr_presso")) & "mr_ivw_steiger" %in% unique(all_mr_results$method)){
-        beta.sensitivity <- list(
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median"),
-          Steiger = get_beta(tmp.res, "mr_ivw_steiger")
-        )
-      }
-      else if(any(grepl(all_mr_results$method, pattern = "mr_presso")) & !("mr_ivw_steiger" %in% unique(all_mr_results$method))){
-        beta.sensitivity <- list(
-          MRPRESSO = if ("mr_presso_corrected" %in% tmp.res$method) {
-            dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
-            dval <- ifelse(dval == "<0.001", 1e-4, as.numeric(dval))
-            if (!is.na(dval) && dval < 0.05) tmp.res[method == "mr_presso_corrected", b]
-            else tmp.res[method == "mr_presso_raw", b]
-          } else NA,
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median")
-        )
-      } else {
-        beta.sensitivity <- list(
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median")
-        )
-      }
+  for(i in nrow(all_mr_results)){
+    cur_mr_result <- all_mr_results[i]
+    # Subset IVW and Wald ratio results
+    cur_mr_result.IVW <- cur_mr_result[method == "Inverse variance weighted" & nsnp > 2]
+    cur_mr_result.wald <- cur_mr_result[method == "Wald ratio"]
+    
+    # Prepare output
+    all_mr_results.all <- data.table()
+    
+    # Loop over unique outcome/ancestry combinations
+    # for (out in unique(cur_mr_result$outcome)) {
+    #   for (exp in unique(cur_mr_result$exposure)) {
+        # MR Egger intercept FDR
+        cur_mr_result.MREgger <- cur_mr_result[outcome == out & exposure == exp & method == "MR Egger"]
+        # all_mr_results.MREgger[, egger_intercept_pval_fdr := p.adjust(egger_intercept_pval, method = "fdr")]
+        MREgger.sig <- cur_mr_result.MREgger[egger_intercept_pval < 0.05]
+        cur_mr_result.IVW$egger_intercept_pval <- cur_mr_result.MREgger$egger_intercept_pval
         
-      # Direction concordance
-      ivw_beta <- all_mr_results.IVW[outcome == out & exposure == exp, b]
-      Prop.SameDir <- sum(sign(unlist(beta.sensitivity)) != sign(ivw_beta), na.rm = TRUE)
-      all_mr_results.IVW[outcome == out & exposure == exp, DiffDirection := Prop.SameDir != 0]
-      
-      # Combine IVW and Wald for this outcome/pop
-      all_mr_results.out <- rbind(
-        all_mr_results.IVW[outcome == out & exposure == exp],
-        all_mr_results.wald[outcome == out & exposure == exp],
-        fill = TRUE
-      )
-      
-      # Add flags
-      all_mr_results.out[, FlagPleiotropy := nrow(MREgger.sig) > 0]
-      all_mr_results.out[, FlagHeterogeneity := nrow(Het.sig) > 0]
-      all_mr_results.out[, FlagSteiger := Steiger.diff]
-      
-      all_mr_results.all <- rbind(all_mr_results.all, all_mr_results.out, fill = TRUE)
-    }
-  }
+        # Heterogeneity flag
+        #Compute the I2 statistics
+        cur_mr_result.IVW$I2 <- (cur_mr_result.IVW$Q-cur_mr_result.IVW$Q_df)/cur_mr_result.IVW$Q
+        Het.sig <- cur_mr_result.IVW[outcome == out & exposure == exp & I2 > 0.5]
+        
+        # Steiger directionality difference
+        if("mr_ivw_steiger" %in% unique(cur_mr_result$method)){
+          steiger_methods <- c("mr_ivw_steiger", "Inverse variance weighted")
+          steiger_dt <- cur_mr_result[outcome == out & exposure == exp & method %in% steiger_methods, .(b)]
+          Steiger.diff <- length(unique(sign(steiger_dt$b))) > 1
+        }
+        else Steiger.diff <- NA
+        
+        # Precompute sensitivity betas for all clusters
+        get_beta <- function(dt, m) if (nrow(dt[method == m]) > 0) dt[method == m, b] else NA
+        
+        tmp.res <- cur_mr_result[outcome == out & exposure == exp]
+        if (nrow(tmp.res) == 0) next
+        
+        # Add presso results
+        if(any(grepl(cur_mr_result$method, pattern = "mr_presso"))){
+          cur_mr_result.IVW$presso_global_pval <- cur_mr_result[method=="mr_presso_raw", presso_global_pval]
+          cur_mr_result.IVW$presso_distortion_pval <- cur_mr_result[method=="mr_presso_raw", distortion_pval]
+        }
+        
+        # Sensitivity betas
+        if(any(grepl(cur_mr_result$method, pattern = "mr_presso")) & "mr_ivw_steiger" %in% unique(cur_mr_result$method)){
+          beta.sensitivity <- list(
+            MRPRESSO = if ("mr_presso_corrected" %in% tmp.res$method) {
+              dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
+              dval <- ifelse(dval == "<0.001", 1e-4, as.numeric(dval))
+              if (!is.na(dval) && dval < 0.05) tmp.res[method == "mr_presso_corrected", b]
+              else tmp.res[method == "mr_presso_raw", b]
+            } else NA,
+            MREgger = get_beta(tmp.res, "MR Egger"),
+            WeightedMedian = get_beta(tmp.res, "Weighted median"),
+            Steiger = get_beta(tmp.res, "mr_ivw_steiger")
+          )
+        }
+        else if(!any(grepl(cur_mr_result$method, pattern = "mr_presso")) & "mr_ivw_steiger" %in% unique(cur_mr_result$method)){
+          beta.sensitivity <- list(
+            MREgger = get_beta(tmp.res, "MR Egger"),
+            WeightedMedian = get_beta(tmp.res, "Weighted median"),
+            Steiger = get_beta(tmp.res, "mr_ivw_steiger")
+          )
+        }
+        else if(any(grepl(cur_mr_result$method, pattern = "mr_presso")) & !("mr_ivw_steiger" %in% unique(cur_mr_result$method))){
+          beta.sensitivity <- list(
+            MRPRESSO = if ("mr_presso_corrected" %in% tmp.res$method) {
+              dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
+              dval <- ifelse(dval == "<0.001", 1e-4, as.numeric(dval))
+              if (!is.na(dval) && dval < 0.05) tmp.res[method == "mr_presso_corrected", b]
+              else tmp.res[method == "mr_presso_raw", b]
+            } else NA,
+            MREgger = get_beta(tmp.res, "MR Egger"),
+            WeightedMedian = get_beta(tmp.res, "Weighted median")
+          )
+        } else {
+          beta.sensitivity <- list(
+            MREgger = get_beta(tmp.res, "MR Egger"),
+            WeightedMedian = get_beta(tmp.res, "Weighted median")
+          )
+        }
+          
+        # Direction concordance
+        ivw_beta <- cur_mr_result.IVW[outcome == out & exposure == exp, b]
+        Prop.SameDir <- sum(sign(unlist(beta.sensitivity)) != sign(ivw_beta), na.rm = TRUE)
+        cur_mr_result.IVW[outcome == out & exposure == exp, DiffDirection := Prop.SameDir != 0]
+        
+        # Combine IVW and Wald for this outcome/pop
+        cur_mr_result.out <- rbind(
+          cur_mr_result.IVW[outcome == out & exposure == exp],
+          cur_mr_result.wald[outcome == out & exposure == exp],
+          fill = TRUE
+        )
+        
+        # Add flags
+        cur_mr_result.out[, FlagPleiotropy := nrow(MREgger.sig) > 0]
+        cur_mr_result.out[, FlagHeterogeneity := nrow(Het.sig) > 0]
+        cur_mr_result.out[, FlagSteiger := Steiger.diff]
+        
+        all_mr_results.all <- rbind(all_mr_results.all, cur_mr_result.out, fill = TRUE)
+      }
+    #}
+  #}
   
   # FDR-adjusted p-value
+  all_mr_results.all[, distortion_pval:=NULL]
   all_mr_results.all[, p_value_fdr := p.adjust(pval, method = "fdr")]
   # all_mr_results.all[, p_value_plot := ifelse(p_value_fdr < 0.05 & DiffDirection == FALSE & FlagHeterogeneity == FALSE & FlagPleiotropy == FALSE, 0, 2)]
-  results_file <- paste0(out_prefix, "_processed_mr_results.tsv")
-  data.table::fwrite(all_mr_results.all, results_file, sep = "\t", na = "NA")
+  results_file <- paste0(opt$out_prefix, "all_processed_mr_results.csv")
+  data.table::fwrite(all_mr_results.all, results_file, sep = ",", na = "NA")
   
   return(all_mr_results.all)
 }

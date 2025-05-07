@@ -164,6 +164,7 @@ for (exposure_file in exposure_files) {
   }
   exposure_ivs <- exposure_ivs_dat$SNP
   message(sprintf("Final selected IVs count: %d", length(exposure_ivs)))
+  data.table::fwrite(data.table::data.table(SNP=exposure_ivs), paste0(opt$out_prefix, exposure_name, "_exposure_ivs.tsv"))
   
   if (!is.null(opt$outcome_dir)) {
     outcome_files <- list.files(
@@ -196,6 +197,6 @@ for (exposure_file in exposure_files) {
 }
 
 all_mr_dt <- data.table::rbindlist(all_mr_results, fill = TRUE)
-process_mr_results(all_mr_results)
+process_mr_results(all_mr_results, opt)
 
 message("All analyses complete.")

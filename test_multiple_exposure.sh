@@ -36,4 +36,4 @@ Rscript pipeline_scripts/mr_pipeline.R \
   --clump_kb 10000 \
   --f_stat 10 \
   --steiger \
-  --presso FALSE
+  --presso
