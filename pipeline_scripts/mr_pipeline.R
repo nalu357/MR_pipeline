@@ -197,6 +197,13 @@ for (exposure_file in exposure_files) {
 }
 
 all_mr_dt <- data.table::rbindlist(all_mr_results, fill = TRUE)
-process_mr_results(all_mr_results, opt)
+process_mr_results(all_mr_dt, opt)
 
 message("All analyses complete.")
+
+# all_mr_results <- list()
+# for(i in c("T2D_merged_vs_PD_merged", "T2D_merged_vs_AD_merged", "LBD_merged_vs_PD_merged", "LBD_merged_vs_AD_merged")){
+#   all_mr_results[[length(all_mr_results) + 1]] <- data.table::fread(paste0("test_output/", i, "_full_mr_results.csv"))
+# }
+
+

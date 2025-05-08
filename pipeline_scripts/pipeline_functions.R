@@ -459,8 +459,8 @@ process_mr_results <- function(all_mr_results, opt) {
   all_mr_results[, egger_intercept:=NULL]	
   all_mr_results[, egger_intercept_se:=NULL]	
   
-  for(i in nrow(all_mr_results)){
-    cur_mr_result <- all_mr_results[i]
+  #for(i in nrow(all_mr_results)){
+    cur_mr_result <- all_mr_results#[i]
     # Subset IVW and Wald ratio results
     cur_mr_result.IVW <- cur_mr_result[method == "Inverse variance weighted" & nsnp > 2]
     cur_mr_result.wald <- cur_mr_result[method == "Wald ratio"]
@@ -469,8 +469,8 @@ process_mr_results <- function(all_mr_results, opt) {
     all_mr_results.all <- data.table()
     
     # Loop over unique outcome/ancestry combinations
-    # for (out in unique(cur_mr_result$outcome)) {
-    #   for (exp in unique(cur_mr_result$exposure)) {
+    for (out in unique(cur_mr_result$outcome)) {
+     for (exp in unique(cur_mr_result[outcome==out, exposure])) {
         # MR Egger intercept FDR
         cur_mr_result.MREgger <- cur_mr_result[outcome == out & exposure == exp & method == "MR Egger"]
         # all_mr_results.MREgger[, egger_intercept_pval_fdr := p.adjust(egger_intercept_pval, method = "fdr")]
@@ -560,7 +560,7 @@ process_mr_results <- function(all_mr_results, opt) {
         
         all_mr_results.all <- rbind(all_mr_results.all, cur_mr_result.out, fill = TRUE)
       }
-    #}
+    }
   #}
   
   # FDR-adjusted p-value
