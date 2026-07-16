@@ -171,6 +171,71 @@ load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
 }
 
 
+#' Parse an MHC region string "CHR:START-END" into its components.
+#'
+#' @param mhc_region Character, e.g. "6:25000000-34000000".
+#' @return A list with numeric `chr`, `start`, `end`, or NULL if unparseable.
+parse_mhc_region <- function(mhc_region) {
+  if (is.null(mhc_region) || is.na(mhc_region) || !nzchar(mhc_region)) return(NULL)
+  m <- regmatches(mhc_region, regexec("^\\s*(\\w+)\\s*:\\s*([0-9]+)\\s*-\\s*([0-9]+)\\s*$", mhc_region))[[1]]
+  if (length(m) != 4) {
+    warning(sprintf("Could not parse --mhc_region '%s' (expected CHR:START-END). MHC flagging skipped.", mhc_region), call. = FALSE)
+    return(NULL)
+  }
+  list(chr = sub("^chr", "", m[2], ignore.case = TRUE), start = as.numeric(m[3]), end = as.numeric(m[4]))
+}
+
+#' Flag (and optionally drop) instruments falling in the MHC region.
+#'
+#' The MHC has long-range LD and pervasive pleiotropy, so it is standard MR
+#' practice to at least flag it. Requires chr/pos columns in the exposure data.
+#'
+#' @param dat Formatted exposure data (with chr.exposure / pos.exposure).
+#' @param mhc_region Character "CHR:START-END".
+#' @param exclude_mhc Logical; if TRUE, drop MHC instruments instead of flagging.
+#' @return `dat` with an added logical column `mhc` (and MHC rows removed if requested).
+flag_mhc_instruments <- function(dat, mhc_region, exclude_mhc = FALSE) {
+  dat$mhc <- FALSE
+  region <- parse_mhc_region(mhc_region)
+  if (is.null(region)) return(dat)
+  if (!all(c("chr.exposure", "pos.exposure") %in% names(dat))) {
+    warning("chr/pos not available in exposure data (map --exp_chr/--exp_pos); MHC flagging skipped.", call. = FALSE)
+    return(dat)
+  }
+  chr_chr <- sub("^chr", "", as.character(dat$chr.exposure), ignore.case = TRUE)
+  pos_num <- suppressWarnings(as.numeric(dat$pos.exposure))
+  in_mhc <- !is.na(pos_num) & chr_chr == region$chr & pos_num >= region$start & pos_num <= region$end
+  dat$mhc <- in_mhc
+  n_mhc <- sum(in_mhc, na.rm = TRUE)
+  if (n_mhc > 0) {
+    if (exclude_mhc) {
+      message(sprintf("MHC: dropping %d instrument(s) in %s (--exclude_mhc).", n_mhc, mhc_region))
+      dat <- dat[!in_mhc, , drop = FALSE]
+    } else {
+      message(sprintf("MHC: flagged %d instrument(s) in %s (kept; column 'mhc'=TRUE). Consider a sensitivity analysis excluding them.", n_mhc, mhc_region))
+    }
+  }
+  dat
+}
+
+#' Warn about instruments whose IDs are not rsIDs.
+#'
+#' LD clumping and harmonisation match on rsID against the reference panel .bim,
+#' so non-rsID entries (e.g. indels named "13:60994514_GT_G") are typically
+#' dropped silently. This surfaces that loss up front.
+#'
+#' @param dat Data frame with a SNP column.
+#' @return Invisibly, the vector of non-rsID SNPs.
+warn_non_rsid_instruments <- function(dat) {
+  non_rsid <- dat$SNP[!grepl("^rs[0-9]+$", dat$SNP)]
+  if (length(non_rsid) > 0) {
+    message(sprintf("NOTE: %d of %d instrument IDs are not rsIDs (e.g. %s). These usually fail rsID-based LD matching/harmonisation and may be dropped.",
+                    length(non_rsid), nrow(dat),
+                    paste(utils::head(non_rsid, 3), collapse = ", ")))
+  }
+  invisible(non_rsid)
+}
+
 #' Select, Clump, and Filter Instruments (IVs)
 #'
 #' Filters exposure data by p-value, performs LD clumping, calculates F-statistic,
@@ -186,9 +251,11 @@ load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
 #'
 #' @return A data frame containing the selected, clumped, and filtered IVs.
 #'
-clump_and_filter_ivs <- function(exposure_dat, clump_p, clump_kb, clump_r2, ld_ref, plink_bin = NULL, min_f_stat = 10) {
-  
+clump_and_filter_ivs <- function(exposure_dat, clump_p, clump_kb, clump_r2, ld_ref, plink_bin = NULL, min_f_stat = 10,
+                                  mhc_region = "6:25000000-34000000", exclude_mhc = FALSE) {
+
   message("----- Selecting and Clumping Instruments -----")
+  n_input <- nrow(exposure_dat)
   
   # Ensure required columns exist
   required_cols <- c("SNP", "pval.exposure", "beta.exposure", "se.exposure", "exposure")
@@ -209,7 +276,8 @@ clump_and_filter_ivs <- function(exposure_dat, clump_p, clump_kb, clump_r2, ld_r
     stop(sprintf("No SNPs found below the significance threshold p < %g.", clump_p), call. = FALSE)
   }
   message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(significant_snps), clump_p))
-  
+  warn_non_rsid_instruments(significant_snps)
+
   # 2. Perform LD Clumping
   # ieugwasr::ld_clump requires a data frame with 'rsid' and 'pval' columns
   clump_input_df <- significant_snps %>%
@@ -279,10 +347,18 @@ clump_and_filter_ivs <- function(exposure_dat, clump_p, clump_kb, clump_r2, ld_r
   if (nrow(exposure_ivs_dat) == 0) {
     stop(sprintf("No IVs remained after F-statistic filtering (F >= %f).", min_f_stat), call.=FALSE)
   }
-  
+
+  # 5. Flag / optionally drop MHC instruments (long-range LD + pleiotropy)
+  exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, mhc_region, exclude_mhc)
+
+  message(sprintf(
+    "Instrument attrition: %d input -> %d at p<%g -> %d after clumping (r2<%g, %dkb) -> %d after F>=%g%s.",
+    n_input, nrow(significant_snps), clump_p, nrow(clumped_snps_df), clump_r2, clump_kb,
+    nrow(exposure_ivs_dat), min_f_stat,
+    if (!exclude_mhc && "mhc" %in% names(exposure_ivs_dat)) sprintf(" (incl. %d MHC flagged)", sum(exposure_ivs_dat$mhc)) else ""))
   message(sprintf("%d IVs remain after clumping and F-statistic filtering.", nrow(exposure_ivs_dat)))
   message("----- Finished Selecting and Clumping Instruments -----")
-  
+
   return(exposure_ivs_dat)
 }
 

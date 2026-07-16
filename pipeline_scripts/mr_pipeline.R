@@ -1,6 +1,38 @@
 #!/usr/bin/env Rscript
-setwd("/lustre/groups/itg/teams/zeggini/projects/MR_pipeline")
-.libPaths("Rpackages/")
+
+# ---------------------------------------------------------------------------
+# Portable start-up (no hardcoded machine paths).
+# The script resolves its own location so it can be launched from anywhere
+# (e.g. `Rscript /path/to/mr_pipeline.R ...` on any cluster) and still find
+# its helper functions. An optional --lib_path lets you point at a custom R
+# library without editing the script.
+# ---------------------------------------------------------------------------
+
+get_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) == 1) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg))))
+  }
+  if (!is.null(sys.frames()[[1]]$ofile)) {
+    return(dirname(normalizePath(sys.frames()[[1]]$ofile)))
+  }
+  getwd()
+}
+SCRIPT_DIR <- get_script_dir()
+
+# Apply --lib_path before loading any packages (optparse runs later).
+.raw_args <- commandArgs(trailingOnly = TRUE)
+.libpath_idx <- which(.raw_args == "--lib_path")
+if (length(.libpath_idx) == 1 && length(.raw_args) >= .libpath_idx + 1) {
+  .user_lib <- .raw_args[.libpath_idx + 1]
+  if (dir.exists(.user_lib)) {
+    .libPaths(.user_lib)
+    message(sprintf("Using R library path: %s", .user_lib))
+  } else {
+    warning(sprintf("--lib_path '%s' does not exist; ignoring.", .user_lib), call. = FALSE)
+  }
+}
 
 suppressPackageStartupMessages({
   library(optparse)
@@ -50,7 +82,13 @@ option_list <- list(
   make_option("--clump_r2", type="numeric", default=0.001, help="R-squared threshold for LD clumping"),
   make_option("--ld_ref", type="character", help="Path prefix to LD reference panel (PLINK bfile format)"),
   make_option("--plink_bin", type="character", default=NULL, help="Path to PLINK binary"),
-  make_option("--skip_clump", action="store_true", default=FALSE, help="Skip LD clumping step"),
+  make_option("--skip_clump", action="store_true", default=FALSE, help="Skip LD clumping (ONLY for pre-clumped/QTL instruments already independent at r2<0.001). NOT for gene-mapping/COJO signal lists, which are only independent at looser r2 - see README."),
+  make_option("--lib_path", type="character", default=NULL, help="Optional path to a custom R library (applied before packages load)."),
+  # MHC handling (long-range LD + heavy pleiotropy). Default: keep but flag.
+  make_option("--mhc_region", type="character", default="6:25000000-34000000",
+              help="MHC region as CHR:START-END used to flag instruments [default: %default, GRCh37 extended MHC]. Set to match your GWAS build."),
+  make_option("--exclude_mhc", action="store_true", default=FALSE,
+              help="Drop instruments in --mhc_region instead of just flagging them [default: keep and flag]."),
   # Analysis parameters
   make_option("--f_stat", type="numeric", default=10, help="Minimum F-statistic for IVs"),
   # Output options
@@ -64,14 +102,17 @@ option_list <- list(
 parser <- OptionParser(option_list=option_list)
 opt <- parse_args(parser)
 
-functions_file <- "pipeline_functions.R"
-if (!file.exists(functions_file)) {
-  alt_path <- file.path("pipeline_scripts", functions_file)
-  if(file.exists(alt_path)) {
-    functions_file <- alt_path
-  } else {
-    stop(sprintf("Helper functions file '%s' or '%s' not found.", functions_file, alt_path), call.=FALSE)
-  }
+# Source helper functions relative to this script's own location first, so the
+# pipeline works regardless of the current working directory.
+functions_candidates <- c(
+  file.path(SCRIPT_DIR, "pipeline_functions.R"),
+  "pipeline_functions.R",
+  file.path("pipeline_scripts", "pipeline_functions.R")
+)
+functions_file <- functions_candidates[file.exists(functions_candidates)][1]
+if (is.na(functions_file)) {
+  stop(sprintf("Helper functions file 'pipeline_functions.R' not found in any of: %s",
+               paste(functions_candidates, collapse=", ")), call.=FALSE)
 }
 source(functions_file)
 
@@ -120,6 +161,10 @@ for (exposure_file in exposure_files) {
   
   if (opt$skip_clump) {
     message("----- Skipping LD Clumping (--skip_clump specified) -----")
+    warning("--skip_clump assumes the input instruments are ALREADY independent at MR standard (r2<0.001). ",
+            "Gene-mapping / GCTA-COJO signal lists are typically only independent at r2<0.05 and are NOT ",
+            "safe to use this way - correlated instruments understate IVW standard errors. If in doubt, ",
+            "re-run WITHOUT --skip_clump to LD-clump at r2<0.001.", call. = FALSE)
     message(sprintf("Selecting IVs based on p < %g and F-statistic >= %f", opt$clump_p, opt$f_stat))
     exposure_ivs_dat <- exposure_dat %>%
       filter(pval.exposure < opt$clump_p)
@@ -127,6 +172,7 @@ for (exposure_file in exposure_files) {
       stop(sprintf("No SNPs found below the significance threshold p < %g.", opt$clump_p), call. = FALSE)
     }
     message(sprintf("Found %d SNPs below p-value threshold.", nrow(exposure_ivs_dat)))
+    warn_non_rsid_instruments(exposure_ivs_dat)
     if (!"samplesize.exposure" %in% names(exposure_ivs_dat)) {
       message("Warning: Sample size column ('samplesize.exposure') not found. Cannot calculate F-statistic.")
       message("Warning: Proceeding without F-statistic filtering as sample size is missing.")
@@ -146,6 +192,7 @@ for (exposure_file in exposure_files) {
       }
       message(sprintf("%d IVs remain after F-statistic filtering.", nrow(exposure_ivs_dat)))
     }
+    exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, opt$mhc_region, opt$exclude_mhc)
     message("----- Finished Selecting Instruments (Clumping Skipped) -----")
   } else {
     message("----- Selecting and Clumping Instruments (LD Clumping Enabled) -----")
@@ -156,7 +203,9 @@ for (exposure_file in exposure_files) {
       clump_r2 = opt$clump_r2,
       ld_ref = opt$ld_ref,
       plink_bin = opt$plink_bin,
-      min_f_stat = opt$f_stat
+      min_f_stat = opt$f_stat,
+      mhc_region = opt$mhc_region,
+      exclude_mhc = opt$exclude_mhc
     )
   }
   if (!inherits(exposure_ivs_dat, "data.frame") || nrow(exposure_ivs_dat) == 0) {
@@ -164,7 +213,16 @@ for (exposure_file in exposure_files) {
   }
   exposure_ivs <- exposure_ivs_dat$SNP
   message(sprintf("Final selected IVs count: %d", length(exposure_ivs)))
-  data.table::fwrite(data.table::data.table(SNP=exposure_ivs), paste0(opt$out_prefix, exposure_name, "_exposure_ivs.tsv"))
+  # Write a fuller instrument table (not just SNP IDs) for transparency/reporting.
+  iv_cols <- intersect(
+    c("SNP", "chr.exposure", "pos.exposure", "effect_allele.exposure", "other_allele.exposure",
+      "eaf.exposure", "beta.exposure", "se.exposure", "pval.exposure", "samplesize.exposure",
+      "F_statistic", "mhc"),
+    names(exposure_ivs_dat))
+  data.table::fwrite(
+    data.table::as.data.table(exposure_ivs_dat)[, ..iv_cols],
+    paste0(opt$out_prefix, exposure_name, "_exposure_ivs.tsv"),
+    sep = "\t", na = "NA")
   
   if (!is.null(opt$outcome_dir)) {
     outcome_files <- list.files(

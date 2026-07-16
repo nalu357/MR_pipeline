@@ -63,14 +63,38 @@ LD clumping requires a reference panel in PLINK binary format (`.bed`, `.bim`, `
 *   Provide the **full path prefix** (without the `.bed`, `.bim`, `.fam` extension) to the reference panel using the `--ld_ref` argument. Example: `--ld_ref /path/to/ld_reference/1kg_eur`.
 *   The reference panel should ideally match the ancestry of your GWAS data.
 
+## Instrument Independence (important for MR)
+
+MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statistically independent**. Correlated instruments understate the IVW standard error and inflate false positives. The MR convention is therefore strict LD clumping at **r² < 0.001** (this pipeline's default `--clump_r2`).
+
+> **Do not confuse gene-mapping "independent signals" with MR instruments.** Signal-selection / fine-mapping pipelines (e.g. GCTA-COJO stepwise selection) deliberately keep *conditionally* independent signals at a much looser threshold (often r² < 0.05), and report **marginal** effect sizes. Two such signals can sit a few kb apart at the same locus. Feeding those directly into MR as independent instruments is **not valid**.
+
+**Recommended handling of a pre-selected signal list:** pass it as the exposure and let the pipeline LD-clump it (i.e. **do not** use `--skip_clump`). `ieugwasr::ld_clump` only needs the SNP list plus an LD reference panel, so it will re-prune your signals to r² < 0.001 correctly. Use `--skip_clump` **only** for instruments already independent at MR standard (e.g. cis-QTL instruments pre-clumped at r² < 0.001).
+
+**MHC region:** by default the pipeline **flags** (does not drop) instruments in the MHC (`--mhc_region`, default `6:25000000-34000000`, GRCh37 extended MHC) via an `mhc` column in the instrument table, so you can run a sensitivity analysis with/without them. Set `--mhc_region` to match your GWAS build, or pass `--exclude_mhc` to drop them outright.
+
+**Non-rsID instruments:** IDs that are not rsIDs (e.g. indels named `13:60994514_GT_G`) usually fail rsID-based LD matching and harmonisation and are dropped; the pipeline warns you when it sees them.
+
+### Key independence / QC options
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--clump_r2` | `0.001` | LD r² threshold for clumping (MR standard). |
+| `--clump_kb` | `10000` | Clumping window (kb). |
+| `--clump_p` | `5e-8` | P-value threshold for instrument selection. |
+| `--skip_clump` | off | Skip clumping. Only for already-independent (r²<0.001) instruments. |
+| `--mhc_region` | `6:25000000-34000000` | MHC region (CHR:START-END) to flag; set to your build. |
+| `--exclude_mhc` | off | Drop MHC instruments instead of flagging them. |
+| `--lib_path` | none | Optional custom R library path (no need to edit the script). |
+
 ## Output Files
 
 The script will generate files in the directory specified by the `--out_prefix` argument (e.g., `output/exposure_vs_outcome_*`):
 
 *   `_harmonized_data.rds`: An R Data Serializable file containing the harmonized data frame used for the MR analysis.
-*   `_full_mr_results.tsv`: A tab-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run).
-*   `all_processed_mr_results.tsv`: A summary file of all processed results and flags based on sensitivity tests.
-*   `_exposure_ivs.tsv`: A file listing the genetic variants selected as instruments for the exposure after clumping and F-statistic filtering.
+*   `_full_mr_results.csv`: A comma-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run).
+*   `all_processed_mr_results.csv`: A summary file of all processed results and flags based on sensitivity tests.
+*   `_exposure_ivs.tsv`: A table of the genetic variants selected as instruments for the exposure after clumping and F-statistic filtering. Includes chr/pos, alleles, EAF, beta/se/p, F-statistic, and an `mhc` flag column.
 
 ## Usage Example Single Exposure, Single Outcome
 
@@ -143,7 +167,7 @@ If you are using QTLs (e.g., eQTLs, pQTLs, mQTLs) as exposures, you can provide 
 Each file should contain the summary statistics for the independent QTLs (IVs) for that molecular trait.
 
 Use the --exposure_dir option to specify this directory.
-Use the --skip_clump option, since the IVs are already independent.
+Use the --skip_clump option **only if** the IVs are already independent at MR standard (r² < 0.001). If your QTL instruments were selected at a looser threshold, omit --skip_clump so the pipeline LD-clumps them (see [Instrument Independence](#instrument-independence-important-for-mr)).
 
 Run :
 
