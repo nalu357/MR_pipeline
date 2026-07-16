@@ -26,12 +26,14 @@ suppressPackageStartupMessages({
 #' @param tmp_dir Temporary directory for fread.
 #' @param keep_snps Optional character vector; keep only these SNPs (used for outcomes).
 #' @param pval_thresh Optional numeric; keep only rows with pval < this (early shrink for exposures).
+#' @param n_total Optional numeric; constant total sample size assigned to every
+#'                SNP when the file has no per-SNP N column (enables Steiger).
 #'
 #' @return A cleaned data.table with standard column names (and a `trait` column).
 #'
 read_gwas <- function(gwas_file, type = "exposure", col_args,
                       trait_name = NULL, tmp_dir = "./tmp_pipeline",
-                      keep_snps = NULL, pval_thresh = NULL) {
+                      keep_snps = NULL, pval_thresh = NULL, n_total = NULL) {
 
   message(sprintf("----- Reading %s Data -----", toupper(type)))
   message(sprintf("Reading GWAS file: %s", gwas_file))
@@ -164,6 +166,19 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
     stop(sprintf("No valid SNPs remaining for %s after cleaning. Check input file and column specifications.", type), call.=FALSE)
   }
   message(sprintf("Rows after cleaning: %d", nrow(dt)))
+
+  # Constant total-N fallback: if the file had no per-SNP sample-size column,
+  # assign the supplied total N to every SNP so F-statistics and Steiger have a
+  # sample size to work with.
+  if (!is.null(n_total)) {
+    if (!"samplesize" %in% names(dt)) {
+      dt[, samplesize := as.numeric(n_total)]
+      message(sprintf("Assigned constant sample size N = %s to all SNPs (no per-SNP N column found).",
+                      format(n_total, scientific = FALSE)))
+    } else {
+      message("Per-SNP sample-size column present; ignoring supplied total N.")
+    }
+  }
 
   if (!is.null(trait_name)) dt[, trait := trait_name]
   message(sprintf("----- Finished Reading %s Data -----", toupper(type)))
@@ -420,7 +435,8 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     col_args = out_col_args,
     trait_name = outcome_name,
     tmp_dir = opt$tmp_dir,
-    keep_snps = exposure_ivs_dat$SNP
+    keep_snps = exposure_ivs_dat$SNP,
+    n_total = opt$out_n_total
   )
   outcome_dat <- format_gwas(outcome_raw, type = "outcome", trait_name = outcome_name)
   if (!inherits(outcome_dat, "data.frame") || nrow(outcome_dat) == 0) {
@@ -441,8 +457,23 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     warning(sprintf("Harmonization failed or removed all SNPs for %s. Skipping.", outcome_file))
     return(NULL)
   }
-  
-  n_snps <- nrow(harmonized_dat)
+
+  # Use the SAME instrument set for every method. harmonise_data(action=2)
+  # keeps palindromic/ambiguous SNPs in the frame but marks mr_keep=FALSE; the
+  # core TwoSampleMR methods honour that, but mr_presso / steiger_filtering do
+  # not. Restrict to mr_keep==TRUE here so PRESSO and Steiger analyse exactly
+  # the same SNPs as IVW/Egger/median.
+  analysis_dat <- if ("mr_keep" %in% names(harmonized_dat)) {
+    harmonized_dat[harmonized_dat$mr_keep == TRUE, , drop = FALSE]
+  } else {
+    harmonized_dat
+  }
+  if (nrow(analysis_dat) == 0) {
+    warning(sprintf("No usable SNPs after harmonisation (all mr_keep==FALSE) for %s. Skipping.", outcome_file))
+    return(NULL)
+  }
+
+  n_snps <- nrow(analysis_dat)
   if (n_snps == 1) {
     mr_methods_list <- c("mr_wald_ratio")
   } else if (n_snps == 2) {
@@ -450,9 +481,9 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   } else if (n_snps >= 3) {
     mr_methods_list <- c("mr_ivw", "mr_weighted_median", "mr_egger_regression")
   }
-  
+
   mr_results <- tryCatch({
-    TwoSampleMR::mr(harmonized_dat, method_list = mr_methods_list)
+    TwoSampleMR::mr(analysis_dat, method_list = mr_methods_list)
   }, error = function(e) {
     warning(sprintf("Error running core TwoSampleMR methods: %s", e$message), call.=FALSE)
     NULL
@@ -463,17 +494,17 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   
   if (n_snps >= 3) {
     het_results <- tryCatch({
-      data.table::as.data.table(TwoSampleMR::mr_heterogeneity(harmonized_dat))
+      data.table::as.data.table(TwoSampleMR::mr_heterogeneity(analysis_dat))
     }, error = function(e) NULL)
     if (!is.null(het_results)) {
       mr_results_dt <- merge(mr_results_dt, het_results[, .(id.exposure, id.outcome, method, Q, Q_df, Q_pval)],
                              by = c("id.exposure", "id.outcome", "method"), all.x = TRUE)
     }
-    
+
     plt_results <- NULL
     if ("MR Egger" %in% mr_results_dt$method) {
       plt_results <- tryCatch({
-        data.table::as.data.table(TwoSampleMR::mr_pleiotropy_test(harmonized_dat))
+        data.table::as.data.table(TwoSampleMR::mr_pleiotropy_test(analysis_dat))
       }, error = function(e) NULL)
     }
     if (!is.null(plt_results)) {
@@ -487,12 +518,12 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   
   if (opt$steiger) {
     steiger_results <- tryCatch({
-      TwoSampleMR::steiger_filtering(harmonized_dat)
+      TwoSampleMR::steiger_filtering(analysis_dat)
     }, error = function(e) NULL)
     if (!is.null(steiger_results)) {
       steiger_filtered_data <- steiger_results %>%
         filter(steiger_dir == TRUE & steiger_pval < 0.05)
-      if (nrow(steiger_filtered_data) > 0 && nrow(steiger_filtered_data) < nrow(harmonized_dat)) {
+      if (nrow(steiger_filtered_data) > 0 && nrow(steiger_filtered_data) < nrow(analysis_dat)) {
         steiger_ivw <- tryCatch({
           TwoSampleMR::mr(steiger_filtered_data, method_list = c("mr_ivw"))
         }, error = function(e) NULL)
@@ -511,7 +542,7 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
         BetaOutcome = "beta.outcome", BetaExposure = "beta.exposure",
         SdOutcome = "se.outcome", SdExposure = "se.exposure",
         OUTLIERtest = TRUE, DISTORTIONtest = TRUE,
-        data = as.data.frame(harmonized_dat),
+        data = as.data.frame(analysis_dat),
         NbDistribution = 1000, SignifThreshold = 0.05
       )
     }, error = function(e) NULL)
@@ -521,12 +552,12 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       presso_main <- data.table::as.data.table(presso_results$`Main MR results`)
       presso_main[, b := `Causal Estimate`]; presso_main[, se := Sd]; presso_main[, pval := `P-value`]
       presso_main[, method := ifelse(`MR Analysis` == "Raw", "mr_presso_raw", "mr_presso_corrected")]
-      presso_main[, id.exposure := harmonized_dat$id.exposure[1]]; presso_main[, id.outcome := harmonized_dat$id.outcome[1]]
-      presso_main[, exposure := harmonized_dat$exposure[1]]; presso_main[, outcome := harmonized_dat$outcome[1]]
+      presso_main[, id.exposure := analysis_dat$id.exposure[1]]; presso_main[, id.outcome := analysis_dat$id.outcome[1]]
+      presso_main[, exposure := analysis_dat$exposure[1]]; presso_main[, outcome := analysis_dat$outcome[1]]
       outlier_indices <- presso_results$`MR-PRESSO results`$`Distortion Test`$`Outliers Indices`
       n_outliers <- if (is.null(outlier_indices) || any(is.na(outlier_indices))) 0 else length(outlier_indices)
-      presso_main[method == "mr_presso_raw", nsnp := nrow(harmonized_dat)]
-      presso_main[method == "mr_presso_corrected", nsnp := nrow(harmonized_dat) - n_outliers]
+      presso_main[method == "mr_presso_raw", nsnp := nrow(analysis_dat)]
+      presso_main[method == "mr_presso_corrected", nsnp := nrow(analysis_dat) - n_outliers]
       presso_main[, or := exp(b)]; presso_main[, or_lci95 := exp(b - 1.96 * se)]; presso_main[, or_uci95 := exp(b + 1.96 * se)]
       cols_to_keep <- c("id.exposure", "id.outcome", "exposure", "outcome", "method", "nsnp", "b", "se", "pval", "or", "or_lci95", "or_uci95")
       if (!is.null(presso_results$`MR-PRESSO results`$`Distortion Test`$Pvalue)) { presso_main[, distortion_pval := presso_results$`MR-PRESSO results`$`Distortion Test`$Pvalue]; cols_to_keep <- c(cols_to_keep, "distortion_pval") }

@@ -67,6 +67,7 @@ option_list <- list(
   make_option("--exp_p", type="character", default="p_value", help="Exposure: P-value column name"),
   make_option("--exp_eaf", type="character", default="effect_allele_frequency", help="Exposure: Effect Allele Frequency column name"),
   make_option("--exp_n", type="character", default="n", help="Exposure: Sample Size column name"),
+  make_option("--exp_n_total", type="numeric", default=NULL, help="Exposure: total sample size, applied as a constant N to every SNP when no per-SNP N column exists (enables Steiger)."),
   make_option("--exp_chr", type="character", default="chr", help="Exposure: Chromosome column name"),
   make_option("--exp_pos", type="character", default="pos", help="Exposure: Position column name"),
   # Outcome column names
@@ -79,6 +80,7 @@ option_list <- list(
   make_option("--out_p", type="character", default="p_value", help="Outcome: P-value column name"),
   make_option("--out_eaf", type="character", default="effect_allele_frequency", help="Outcome: Effect Allele Frequency column name"),
   make_option("--out_n", type="character", default="n", help="Outcome: Sample Size column name"),
+  make_option("--out_n_total", type="numeric", default=NULL, help="Outcome: total sample size, applied as a constant N to every SNP when no per-SNP N column exists (needed for Steiger)."),
   make_option("--out_ncase", type="character", default="ncases", help="Outcome: Number of Cases column name"),
   make_option("--out_type", type="character", default="binary", help="Outcome type ('binary' or 'continuous')"),
   make_option("--out_chr", type="character", default="chr", help="Outcome: Chromosome column name"),
@@ -169,7 +171,8 @@ for (exposure_file in exposure_files) {
     col_args = exp_col_args,
     trait_name = exposure_name,
     tmp_dir = opt$tmp_dir,
-    pval_thresh = opt$clump_p
+    pval_thresh = opt$clump_p,
+    n_total = opt$exp_n_total
   )
   message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
 

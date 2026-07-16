@@ -68,7 +68,7 @@ The pipeline requires two input GWAS summary statistics files: one for the expos
     *   **P-value (P):** The p-value for the association. Map using `--exp_p` / `--out_p`.
 *   **Recommended Columns:** These columns are not strictly essential for basic MR but are needed for specific analyses or improve harmonization:
     *   **Effect Allele Frequency (EAF):** Highly recommended for harmonization (allele checks, handling ambiguous SNPs). Map using `--exp_eaf` / `--out_eaf`.
-    *   **Sample Size (N):** Required for calculating instrument strength (F-statistic) and for Steiger filtering (`--steiger`). Map using `--exp_n` / `--out_n`.
+    *   **Sample Size (N):** Used for Steiger filtering (`--steiger`). Map a per-SNP column with `--exp_n` / `--out_n`, or, if the file has no N column, supply the study's total sample size with `--exp_n_total` / `--out_n_total` (applied as a constant N to every SNP). (Note: the F-statistic is computed as beta²/se² and does not need N.)
     *   **Chromosome (CHR):** Useful for some functions and debugging. Map using `--exp_chr` / `--out_chr`.
     *   **Position (POS):** Useful for some functions and debugging. Map using `--exp_pos` / `--out_pos`.
     *   **Number of Cases (NCASE):** Required for binary outcomes (`--out_type binary`) if Steiger filtering (`--steiger`) is enabled. Map using `--out_ncase`.
