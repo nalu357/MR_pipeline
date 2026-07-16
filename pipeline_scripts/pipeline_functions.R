@@ -25,7 +25,8 @@ suppressPackageStartupMessages({
 #' @return A data frame formatted by TwoSampleMR::format_data.
 #'
 load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
-                                 trait_name, tmp_dir = "./tmp_pipeline") {
+                                 trait_name, tmp_dir = "./tmp_pipeline",
+                                 keep_snps = NULL) {
   
   message(sprintf("----- Loading and Formatting %s Data -----", toupper(type)))
   message(sprintf("Reading GWAS file: %s", gwas_file))
@@ -76,7 +77,23 @@ load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
   new_names <- rename_map_inv[names_to_rename]
   data.table::setnames(dt, old = names_to_rename, new = new_names)
   message("Renamed columns to standard names (SNP, beta, se, pval, etc.)")
-  
+
+  # --- Early SNP subset (outcomes) ---
+  # We only ever need the instrument SNPs from an outcome GWAS. Filtering here,
+  # before cleaning and TwoSampleMR::format_data, avoids formatting the entire
+  # file (millions of rows) - which is slow and overflows R's protection stack
+  # ("C stack usage is too close to the limit") on large GWAS.
+  if (!is.null(keep_snps)) {
+    rows_before <- nrow(dt)
+    dt <- dt[SNP %in% keep_snps]
+    message(sprintf("Subset to requested instruments: %d of %d rows retained (%d unique SNPs requested).",
+                    nrow(dt), rows_before, length(unique(keep_snps))))
+    if (nrow(dt) == 0) {
+      stop(sprintf("None of the requested instrument SNPs were found in %s (check SNP-ID column / build).",
+                   basename(gwas_file)), call. = FALSE)
+    }
+  }
+
   # --- Basic Cleaning ---
   initial_rows <- nrow(dt)
   message(sprintf("Initial rows: %d", initial_rows))
@@ -383,7 +400,8 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     type = "outcome",
     col_args = out_col_args,
     trait_name = outcome_name,
-    tmp_dir = opt$tmp_dir
+    tmp_dir = opt$tmp_dir,
+    keep_snps = exposure_ivs_dat$SNP
   )
   if (!inherits(outcome_dat, "data.frame") || nrow(outcome_dat) == 0) {
     warning(sprintf("Outcome data loading failed for %s. Skipping.", outcome_file))
