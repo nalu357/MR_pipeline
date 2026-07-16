@@ -10,22 +10,42 @@ This R-based pipeline performs a standard two-sample Mendelian Randomization (MR
 
 ### R Packages
 
-You need to have the following R packages installed:
+The pipeline needs these R packages:
 
-*   `optparse`: For parsing command-line arguments.
-*   `dplyr`: For data manipulation.
-*   `data.table`: For fast file reading (`fread`) and data manipulation.
-*   `TwoSampleMR`: The core package for MR analysis functions.
-*   `ieugwasr`: Required for LD clumping using the 1000 Genomes reference panel.
-*   `genetics.binaRies`: Helper for `ieugwasr` to find PLINK binaries (optional, if PLINK is not in PATH).
-*   `MRPRESSO`: Required if the `--presso` option is used for outlier detection (install from GitHub: `devtools::install_github("rondolab/MR-PRESSO")`).
+*   `optparse` (CRAN): command-line argument parsing.
+*   `dplyr` (CRAN): data manipulation.
+*   `data.table` (CRAN): fast file reading (`fread`) and manipulation.
+*   `TwoSampleMR` (GitHub, MRCIEU): core MR analysis functions.
+*   `ieugwasr` (GitHub, MRCIEU): LD clumping via PLINK.
+*   `genetics.binaRies` (GitHub, MRCIEU): optional helper to locate PLINK binaries if PLINK is not on PATH.
+*   `MRPRESSO` (GitHub, rondolab): required only if `--presso` is used.
 
-You can install most of these from CRAN:
-`install.packages(c("tidyselect", "generics", "optparse", "dplyr", "data.table", "remotes", "ieugwasr"))`
+#### Recommended: one-step install into a repo-local library
 
-You can install most of these from GitHub:
-`remotes::install_github("MRCIEU/TwoSampleMR")`
-`remotes::install_github("MRCIEU/genetics.binaRies")`
+Run the installer once on the machine where you will run the pipeline (use the R version you intend to run with):
+
+```bash
+Rscript install_dependencies.R
+```
+
+This installs everything into a repo-local `Rpackages/` directory (git-ignored). `mr_pipeline.R` **auto-detects `Rpackages/`**, so no `--lib_path` is needed afterwards. Precedence for the library path is: `--lib_path` (explicit) > repo-local `Rpackages/` > R's default.
+
+#### Pinning exact versions (reproducibility)
+
+By default `install_dependencies.R` installs the latest versions. To lock the versions you validated against, first dump them on the target machine:
+
+```r
+pkgs <- c("optparse","dplyr","data.table","TwoSampleMR","ieugwasr","genetics.binaRies","MRPRESSO")
+cat("R:", R.version.string, "\n")
+for (p in pkgs) {
+  if (requireNamespace(p, quietly=TRUE)) {
+    d <- packageDescription(p); sha <- d$RemoteSha; if (is.null(sha)) sha <- d$GithubSHA1
+    cat(sprintf("%-18s v=%-10s sha=%s\n", p, d$Version, if (is.null(sha)) "CRAN" else sha))
+  } else cat(sprintf("%-18s NOT INSTALLED\n", p))
+}
+```
+
+Then fill the `cran_pins` (exact versions) and `github_pins` (git SHAs/tags) blocks near the top of `install_dependencies.R` and re-run it.
 
 ### External Software
 
