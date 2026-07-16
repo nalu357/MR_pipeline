@@ -26,7 +26,7 @@ suppressPackageStartupMessages({
 #'
 load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
                                  trait_name, tmp_dir = "./tmp_pipeline",
-                                 keep_snps = NULL) {
+                                 keep_snps = NULL, pval_thresh = NULL) {
   
   message(sprintf("----- Loading and Formatting %s Data -----", toupper(type)))
   message(sprintf("Reading GWAS file: %s", gwas_file))
@@ -91,6 +91,21 @@ load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
     if (nrow(dt) == 0) {
       stop(sprintf("None of the requested instrument SNPs were found in %s (check SNP-ID column / build).",
                    basename(gwas_file)), call. = FALSE)
+    }
+  }
+
+  # For an exposure we only ever instrument on SNPs passing the selection
+  # threshold, so pre-filter by p-value before format_data. This is the same
+  # stack-overflow guard as keep_snps, for the exposure side. (Skipped when the
+  # threshold is >=1, e.g. pre-clumped QTL inputs meant to be kept in full.)
+  if (!is.null(pval_thresh) && pval_thresh < 1 && "pval" %in% names(dt)) {
+    rows_before <- nrow(dt)
+    pv <- suppressWarnings(as.numeric(dt$pval))
+    dt <- dt[!is.na(pv) & pv < pval_thresh]
+    message(sprintf("Pre-filtered to pval < %g: %d of %d rows retained.",
+                    pval_thresh, nrow(dt), rows_before))
+    if (nrow(dt) == 0) {
+      stop(sprintf("No SNPs with pval < %g in %s.", pval_thresh, basename(gwas_file)), call. = FALSE)
     }
   }
 

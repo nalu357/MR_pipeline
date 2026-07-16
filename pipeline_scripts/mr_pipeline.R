@@ -161,7 +161,8 @@ for (exposure_file in exposure_files) {
     type = "exposure",
     col_args = exp_col_args,
     trait_name = exposure_name,
-    tmp_dir = opt$tmp_dir
+    tmp_dir = opt$tmp_dir,
+    pval_thresh = opt$clump_p
   )
   if (!inherits(exposure_dat, "data.frame") || nrow(exposure_dat) == 0) {
     stop("Exposure data loading and formatting failed or resulted in empty data frame. Exiting.", call. = FALSE)
