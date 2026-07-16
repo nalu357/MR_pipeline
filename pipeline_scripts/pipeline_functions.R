@@ -9,26 +9,31 @@ suppressPackageStartupMessages({
   library(ieugwasr)
 })
 
-#' Load and Format GWAS Summary Statistics
+#' Read and Clean GWAS Summary Statistics
 #'
-#' Reads a GWAS summary statistics file, selects and renames columns
-#' according to specified parameters, performs basic cleaning, and
-#' prepares the data for TwoSampleMR analysis.
+#' Reads a GWAS file, selects/renames columns to standard names, optionally
+#' subsets early (by SNP list and/or p-value threshold) to keep processing
+#' cheap on very large files, and performs basic cleaning. It does NOT run
+#' TwoSampleMR::format_data - that is done separately by format_gwas() on a
+#' small selected set, which avoids formatting millions of rows (slow, and it
+#' overflows R's protection stack).
 #'
 #' @param gwas_file Path to the GWAS summary statistics file.
 #' @param type Character string, either "exposure" or "outcome".
 #' @param col_args List containing column name arguments from optparse (e.g., opt$exp_snp).
 #'                 Expected names in list: snp, beta, se, ea, nea, p, eaf, n, chr, pos, ncase.
-#' @param trait_name Name to assign to the trait.
+#' @param trait_name Name to assign to the trait (added as a `trait` column).
 #' @param tmp_dir Temporary directory for fread.
+#' @param keep_snps Optional character vector; keep only these SNPs (used for outcomes).
+#' @param pval_thresh Optional numeric; keep only rows with pval < this (early shrink for exposures).
 #'
-#' @return A data frame formatted by TwoSampleMR::format_data.
+#' @return A cleaned data.table with standard column names (and a `trait` column).
 #'
-load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
-                                 trait_name, tmp_dir = "./tmp_pipeline",
-                                 keep_snps = NULL, pval_thresh = NULL) {
-  
-  message(sprintf("----- Loading and Formatting %s Data -----", toupper(type)))
+read_gwas <- function(gwas_file, type = "exposure", col_args,
+                      trait_name = NULL, tmp_dir = "./tmp_pipeline",
+                      keep_snps = NULL, pval_thresh = NULL) {
+
+  message(sprintf("----- Reading %s Data -----", toupper(type)))
   message(sprintf("Reading GWAS file: %s", gwas_file))
   
   # Define mapping from standard TwoSampleMR names to user-provided column names
@@ -159,47 +164,49 @@ load_and_format_gwas <- function(gwas_file, type = "exposure", col_args,
     stop(sprintf("No valid SNPs remaining for %s after cleaning. Check input file and column specifications.", type), call.=FALSE)
   }
   message(sprintf("Rows after cleaning: %d", nrow(dt)))
-  
-  # --- Format using TwoSampleMR ---
-  # Add trait name column for format_data
-  dt[, trait := trait_name]
-  
-  # Dynamically create arguments for format_data, passing only columns that exist in dt
+
+  if (!is.null(trait_name)) dt[, trait := trait_name]
+  message(sprintf("----- Finished Reading %s Data -----", toupper(type)))
+  return(dt[])
+}
+
+#' Format a cleaned GWAS table with TwoSampleMR::format_data
+#'
+#' Runs format_data on an ALREADY-SMALL, cleaned table (selected instruments,
+#' or an outcome subset to the instruments). Optional columns that are present
+#' are passed through automatically.
+#'
+#' @param dt Cleaned data.table from read_gwas().
+#' @param type "exposure" or "outcome".
+#' @param trait_name Optional; sets/overwrites the `trait` column.
+#' @return A data.frame from TwoSampleMR::format_data.
+format_gwas <- function(dt, type = "exposure", trait_name = NULL) {
+  dt <- data.table::as.data.table(dt)
+  if (!is.null(trait_name)) dt[, trait := trait_name]
+  if (!"trait" %in% names(dt)) dt[, trait := type]
+
   format_args <- list(
-    dat = as.data.frame(dt), # format_data often prefers data.frame
-    type = type,
-    snp_col = "SNP",
-    beta_col = "beta",
-    se_col = "se",
-    effect_allele_col = "effect_allele",
-    other_allele_col = "other_allele",
-    pval_col = "pval",
-    phenotype_col = "trait"
+    dat = as.data.frame(dt), type = type,
+    snp_col = "SNP", beta_col = "beta", se_col = "se",
+    effect_allele_col = "effect_allele", other_allele_col = "other_allele",
+    pval_col = "pval", phenotype_col = "trait"
   )
   optional_cols_map <- c(eaf = "eaf", samplesize = "samplesize", ncase = "ncase", chr = "chr", pos = "pos")
   for (std_name in names(optional_cols_map)) {
-    tsmr_arg_name <- paste0(optional_cols_map[[std_name]], "_col")
     if (std_name %in% names(dt)) {
-      format_args[[tsmr_arg_name]] <- std_name
-    } else {
-      # If the column wasn't found or read, don't pass the argument to format_data
-      message(sprintf("Optional column '%s' (mapped from user arg '%s') not found in input file or removed during cleaning. Not passing to format_data.", std_name, col_map[[std_name]]))
+      format_args[[paste0(optional_cols_map[[std_name]], "_col")]] <- std_name
     }
   }
-  
-  formatted_data <- tryCatch({
-    do.call(TwoSampleMR::format_data, format_args)
-  }, error = function(e) {
-    stop(sprintf("Error during TwoSampleMR::format_data for %s: %s", type, e$message), call. = FALSE)
-  })
-  
-  message(sprintf("TwoSampleMR::format_data completed. Final data has %d SNPs.", nrow(formatted_data)))
-  if(nrow(formatted_data) == 0) {
-    stop(sprintf("No SNPs remaining for %s after TwoSampleMR::format_data. Check for potential issues (e.g., inconsistent data types).", type), call.=FALSE)
+
+  formatted <- tryCatch(
+    do.call(TwoSampleMR::format_data, format_args),
+    error = function(e) stop(sprintf("Error during TwoSampleMR::format_data for %s: %s", type, e$message), call. = FALSE)
+  )
+  if (nrow(formatted) == 0) {
+    stop(sprintf("No SNPs remaining for %s after TwoSampleMR::format_data.", type), call. = FALSE)
   }
-  message(sprintf("----- Finished Loading and Formatting %s Data -----", toupper(type)))
-  
-  return(formatted_data)
+  message(sprintf("format_data completed for %s: %d SNPs.", type, nrow(formatted)))
+  formatted
 }
 
 
@@ -268,128 +275,122 @@ warn_non_rsid_instruments <- function(dat) {
   invisible(non_rsid)
 }
 
-#' Select, Clump, and Filter Instruments (IVs)
+#' Resolve the PLINK binary path.
 #'
-#' Filters exposure data by p-value, performs LD clumping, calculates F-statistic,
-#' and filters IVs based on F-statistic threshold.
+#' Uses an explicit path if given, else tries genetics.binaRies, else relies on
+#' PLINK being on PATH (returns NULL so ieugwasr falls back to PATH).
 #'
-#' @param exposure_dat Formatted exposure data frame from TwoSampleMR::format_data.
-#' @param clump_p P-value threshold for selecting potential IVs.
-#' @param clump_kb Clumping window size (kilobases).
-#' @param clump_r2 Clumping r-squared threshold.
-#' @param ld_ref Path prefix to LD reference panel (PLINK format).
-#' @param plink_bin Path to PLINK binary (optional).
-#' @param min_f_stat Minimum F-statistic threshold for IVs.
-#'
-#' @return A data frame containing the selected, clumped, and filtered IVs.
-#'
-clump_and_filter_ivs <- function(exposure_dat, clump_p, clump_kb, clump_r2, ld_ref, plink_bin = NULL, min_f_stat = 10,
-                                  mhc_region = "6:25000000-34000000", exclude_mhc = FALSE) {
+#' @param plink_bin Optional explicit path to the PLINK executable.
+#' @return A path string, or NULL.
+resolve_plink <- function(plink_bin = NULL) {
+  if (!is.null(plink_bin)) return(plink_bin)
+  suppressPackageStartupMessages({
+    if (requireNamespace("genetics.binaRies", quietly = TRUE)) {
+      p <- tryCatch(genetics.binaRies::get_plink_binary(), error = function(e) NULL)
+      if (!is.null(p)) { message("Using PLINK binary found at: ", p); return(p) }
+    }
+  })
+  warning("Could not find PLINK via genetics.binaRies. Relying on PLINK being on PATH or provide --plink_bin.", call. = FALSE)
+  NULL
+}
 
-  message("----- Selecting and Clumping Instruments -----")
-  n_input <- nrow(exposure_dat)
-  
-  # Ensure required columns exist
-  required_cols <- c("SNP", "pval.exposure", "beta.exposure", "se.exposure", "exposure")
-  if (!all(required_cols %in% names(exposure_dat))) {
-    stop("Missing required columns in exposure data for clumping (SNP, pval.exposure, beta.exposure, se.exposure, exposure). Check formatting step.", call. = FALSE)
-  }
-  
-  # Check if N is available for context, needed later for Steiger
-  if (!"samplesize.exposure" %in% names(exposure_dat)) {
-    message("Warning: Sample size column ('samplesize.exposure') not found in exposure data. F-statistic calculation will proceed, but interpretation may be less reliable, and Steiger filtering will fail later if requested.")
-  }
-  
-  # 1. Filter by p-value threshold
-  significant_snps <- exposure_dat %>%
-    filter(pval.exposure < clump_p)
-  
-  if (nrow(significant_snps) == 0) {
+#' Select exposure instruments (p-value filter -> LD clumping -> format -> F-stat -> MHC).
+#'
+#' Single, coherent home for ALL instrument selection. Works on the RAW cleaned
+#' exposure (from read_gwas), so LD clumping - which only needs rsID + p-value -
+#' is done BEFORE TwoSampleMR::format_data. format_data therefore only ever runs
+#' on the handful of selected instruments.
+#'
+#' Two modes:
+#'   * default: LD-clump candidate SNPs to r2<clump_r2 (MR-standard independence).
+#'   * skip_clump=TRUE: keep all candidates as-is (ONLY for inputs already
+#'     independent at r2<0.001, e.g. pre-clumped cis-QTL instruments).
+#'
+#' @param exposure_raw Cleaned exposure data.table from read_gwas().
+#' @param trait_name Exposure trait name.
+#' @param clump_p P-value threshold for candidate instruments.
+#' @param clump_kb,clump_r2 LD clumping window / r-squared threshold.
+#' @param ld_ref PLINK bfile prefix for the LD reference panel.
+#' @param plink_bin Optional PLINK binary path.
+#' @param min_f_stat Minimum per-SNP F-statistic (beta^2/se^2).
+#' @param skip_clump If TRUE, skip LD clumping (inputs assumed already independent).
+#' @param mhc_region,exclude_mhc MHC handling (see flag_mhc_instruments()).
+#'
+#' @return A TwoSampleMR-formatted exposure data.frame of instruments.
+select_instruments <- function(exposure_raw, trait_name,
+                               clump_p = 5e-8, clump_kb = 10000, clump_r2 = 0.001,
+                               ld_ref = NULL, plink_bin = NULL, min_f_stat = 10,
+                               skip_clump = FALSE,
+                               mhc_region = "6:25000000-34000000", exclude_mhc = FALSE) {
+
+  message("----- Selecting Instruments -----")
+  exposure_raw <- data.table::as.data.table(exposure_raw)
+  n_input <- nrow(exposure_raw)
+
+  # 1. Candidate instruments: p < clump_p
+  candidates <- exposure_raw[!is.na(pval) & pval < clump_p]
+  if (nrow(candidates) == 0) {
     stop(sprintf("No SNPs found below the significance threshold p < %g.", clump_p), call. = FALSE)
   }
-  message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(significant_snps), clump_p))
-  warn_non_rsid_instruments(significant_snps)
+  message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(candidates), clump_p))
+  warn_non_rsid_instruments(candidates)
 
-  # 2. Perform LD Clumping
-  # ieugwasr::ld_clump requires a data frame with 'rsid' and 'pval' columns
-  clump_input_df <- significant_snps %>%
-    select(rsid = SNP, pval = pval.exposure) %>%
-    # ld_clump can fail if pval is exactly 0, add a small amount
-    mutate(pval = ifelse(pval == 0, .Machine$double.xmin, pval)) %>%
-    as.data.frame() # ld_clump expects a data.frame
-  
-  # Determine PLINK binary path
-  plink_path <- plink_bin
-  if (is.null(plink_path)) {
-    # Try to find PLINK using genetics.binaRies (helper for ieugwasr)
-    # Suppress potential startup messages from genetics.binaRies
-    suppressPackageStartupMessages({
-      if (!requireNamespace("genetics.binaRies", quietly = TRUE)) {
-        warning("Package 'genetics.binaRies' not found. Relying on PLINK being in PATH or provide --plink_bin.", call. = FALSE)
-      } else {
-        plink_path <- tryCatch(genetics.binaRies::get_plink_binary(), error = function(e) NULL)
-        if (is.null(plink_path)) {
-          warning("Could not automatically find PLINK binary using 'genetics.binaRies'. Relying on PLINK being in PATH or provide --plink_bin.", call. = FALSE)
-        } else {
-          message("Using PLINK binary found at: ", plink_path)
-        }
-      }
-    })
-  }
-  
-  message(sprintf("Performing LD clumping with kb=%d, r2=%f, p=%g using LD reference: %s",
-                  clump_kb, clump_r2, clump_p, ld_ref))
-  
-  clumped_snps_df <- tryCatch({
-    ieugwasr::ld_clump(
-      dat = clump_input_df,
-      clump_kb = clump_kb,
-      clump_r2 = clump_r2,
-      clump_p = 1, # Already filtered by p-value, keep all independent signals from the input set
-      bfile = ld_ref,
-      plink_bin = plink_path # Pass the determined path
+  # 2. Independence: LD clump (default) or skip for already-independent inputs
+  if (skip_clump) {
+    warning("--skip_clump: treating inputs as already independent at MR standard (r2<0.001). ",
+            "Gene-mapping / GCTA-COJO signal lists are typically only independent at r2<0.05 and are ",
+            "NOT safe this way (correlated instruments understate IVW SEs). If unsure, re-run WITHOUT ",
+            "--skip_clump to LD-clump at r2<0.001.", call. = FALSE)
+    selected_snps <- candidates$SNP
+    message(sprintf("Skipping LD clumping; keeping all %d candidate SNPs.", length(selected_snps)))
+  } else {
+    if (is.null(ld_ref)) stop("LD clumping requested but --ld_ref was not provided.", call. = FALSE)
+    clump_input_df <- data.frame(
+      rsid = candidates$SNP,
+      pval = ifelse(candidates$pval == 0, .Machine$double.xmin, candidates$pval),
+      stringsAsFactors = FALSE
     )
-  }, error = function(e) {
-    stop(sprintf("Error during LD clumping: %s. Check PLINK installation, LD reference path (%s), and inputs.", e$message, ld_ref), call. = FALSE)
-  })
-  
-  if (nrow(clumped_snps_df) == 0) {
-    stop("Clumping removed all SNPs. Check parameters and LD reference.", call. = FALSE)
+    plink_path <- resolve_plink(plink_bin)
+    message(sprintf("Performing LD clumping with kb=%d, r2=%g using LD reference: %s",
+                    clump_kb, clump_r2, ld_ref))
+    clumped_snps_df <- tryCatch(
+      ieugwasr::ld_clump(dat = clump_input_df, clump_kb = clump_kb, clump_r2 = clump_r2,
+                         clump_p = 1, bfile = ld_ref, plink_bin = plink_path),
+      error = function(e) stop(sprintf("Error during LD clumping: %s. Check PLINK installation, LD reference path (%s), and inputs.", e$message, ld_ref), call. = FALSE)
+    )
+    if (nrow(clumped_snps_df) == 0) {
+      stop("Clumping removed all SNPs. Check parameters and LD reference.", call. = FALSE)
+    }
+    selected_snps <- clumped_snps_df$rsid
+    message(sprintf("Identified %d independent instruments after clumping.", length(selected_snps)))
   }
-  message(sprintf("Identified %d independent instruments after clumping.", nrow(clumped_snps_df)))
-  
-  # Filter original exposure data to keep only clumped IVs
-  exposure_ivs_dat <- exposure_dat %>%
-    filter(SNP %in% clumped_snps_df$rsid)
-  
-  # 3. Calculate F-statistic (F = beta^2 / se^2)
+
+  # 3. Format ONLY the selected instruments (small set -> no stack blow-up)
+  ivs_raw <- candidates[SNP %in% selected_snps]
+  exposure_ivs_dat <- format_gwas(ivs_raw, type = "exposure", trait_name = trait_name)
+
+  # 4. F-statistic (F = beta^2 / se^2; needs no sample size) and filter
   exposure_ivs_dat <- exposure_ivs_dat %>%
     mutate(F_statistic = (beta.exposure^2) / (se.exposure^2))
-  
-  # 4. Filter by F-statistic threshold
   rows_before_f <- nrow(exposure_ivs_dat)
-  exposure_ivs_dat <- exposure_ivs_dat %>%
-    filter(F_statistic >= min_f_stat)
-  rows_removed_f <- rows_before_f - nrow(exposure_ivs_dat)
-  
-  if (rows_removed_f > 0) {
-    message(sprintf("Removed %d IVs with F-statistic < %f.", rows_removed_f, min_f_stat))
+  exposure_ivs_dat <- exposure_ivs_dat %>% filter(F_statistic >= min_f_stat)
+  if (nrow(exposure_ivs_dat) < rows_before_f) {
+    message(sprintf("Removed %d IVs with F-statistic < %g.", rows_before_f - nrow(exposure_ivs_dat), min_f_stat))
   }
-  
   if (nrow(exposure_ivs_dat) == 0) {
-    stop(sprintf("No IVs remained after F-statistic filtering (F >= %f).", min_f_stat), call.=FALSE)
+    stop(sprintf("No IVs remained after F-statistic filtering (F >= %g).", min_f_stat), call. = FALSE)
   }
 
   # 5. Flag / optionally drop MHC instruments (long-range LD + pleiotropy)
   exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, mhc_region, exclude_mhc)
 
   message(sprintf(
-    "Instrument attrition: %d input -> %d at p<%g -> %d after clumping (r2<%g, %dkb) -> %d after F>=%g%s.",
-    n_input, nrow(significant_snps), clump_p, nrow(clumped_snps_df), clump_r2, clump_kb,
+    "Instrument attrition: %d input -> %d candidates (p<%g) -> %d %s -> %d after F>=%g%s.",
+    n_input, nrow(candidates), clump_p, length(selected_snps),
+    if (skip_clump) "kept (no clump)" else sprintf("clumped (r2<%g, %dkb)", clump_r2, clump_kb),
     nrow(exposure_ivs_dat), min_f_stat,
     if (!exclude_mhc && "mhc" %in% names(exposure_ivs_dat)) sprintf(" (incl. %d MHC flagged)", sum(exposure_ivs_dat$mhc)) else ""))
-  message(sprintf("%d IVs remain after clumping and F-statistic filtering.", nrow(exposure_ivs_dat)))
-  message("----- Finished Selecting and Clumping Instruments -----")
+  message("----- Finished Selecting Instruments -----")
 
   return(exposure_ivs_dat)
 }
@@ -410,7 +411,7 @@ clump_and_filter_ivs <- function(exposure_dat, clump_p, clump_kb, clump_r2, ld_r
 #' @return data.table of MR results for this exposure-outcome pair (invisible, but also written to disk).
 run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, out_prefix, opt) {
   message(sprintf("Processing outcome: %s", outcome_file))
-  outcome_dat <- load_and_format_gwas(
+  outcome_raw <- read_gwas(
     gwas_file = outcome_file,
     type = "outcome",
     col_args = out_col_args,
@@ -418,6 +419,7 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     tmp_dir = opt$tmp_dir,
     keep_snps = exposure_ivs_dat$SNP
   )
+  outcome_dat <- format_gwas(outcome_raw, type = "outcome", trait_name = outcome_name)
   if (!inherits(outcome_dat, "data.frame") || nrow(outcome_dat) == 0) {
     warning(sprintf("Outcome data loading failed for %s. Skipping.", outcome_file))
     return(NULL)

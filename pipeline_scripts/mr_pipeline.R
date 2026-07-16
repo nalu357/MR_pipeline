@@ -156,7 +156,10 @@ for (exposure_file in exposure_files) {
     ea = opt$exp_ea, nea = opt$exp_nea, p = opt$exp_p,
     eaf = opt$exp_eaf, n = opt$exp_n, chr = opt$exp_chr, pos = opt$exp_pos
   )
-  exposure_dat <- load_and_format_gwas(
+  # Read + clean the exposure (cheap; pre-filtered by p-value so format_data
+  # later runs only on the selected instruments). Full summary stats are the
+  # assumed input; --skip_clump handles pre-independent signal lists.
+  exposure_raw <- read_gwas(
     gwas_file = exposure_file,
     type = "exposure",
     col_args = exp_col_args,
@@ -164,60 +167,23 @@ for (exposure_file in exposure_files) {
     tmp_dir = opt$tmp_dir,
     pval_thresh = opt$clump_p
   )
-  if (!inherits(exposure_dat, "data.frame") || nrow(exposure_dat) == 0) {
-    stop("Exposure data loading and formatting failed or resulted in empty data frame. Exiting.", call. = FALSE)
-  }
-  message(sprintf("Successfully loaded and formatted exposure data for trait '%s'.", opt$exp_name))
-  
-  if (opt$skip_clump) {
-    message("----- Skipping LD Clumping (--skip_clump specified) -----")
-    warning("--skip_clump assumes the input instruments are ALREADY independent at MR standard (r2<0.001). ",
-            "Gene-mapping / GCTA-COJO signal lists are typically only independent at r2<0.05 and are NOT ",
-            "safe to use this way - correlated instruments understate IVW standard errors. If in doubt, ",
-            "re-run WITHOUT --skip_clump to LD-clump at r2<0.001.", call. = FALSE)
-    message(sprintf("Selecting IVs based on p < %g and F-statistic >= %f", opt$clump_p, opt$f_stat))
-    exposure_ivs_dat <- exposure_dat %>%
-      filter(pval.exposure < opt$clump_p)
-    if (nrow(exposure_ivs_dat) == 0) {
-      stop(sprintf("No SNPs found below the significance threshold p < %g.", opt$clump_p), call. = FALSE)
-    }
-    message(sprintf("Found %d SNPs below p-value threshold.", nrow(exposure_ivs_dat)))
-    warn_non_rsid_instruments(exposure_ivs_dat)
-    if (!"samplesize.exposure" %in% names(exposure_ivs_dat)) {
-      message("Warning: Sample size column ('samplesize.exposure') not found. Cannot calculate F-statistic.")
-      message("Warning: Proceeding without F-statistic filtering as sample size is missing.")
-      exposure_ivs_dat$F_statistic <- NA
-    } else {
-      exposure_ivs_dat <- exposure_ivs_dat %>%
-        mutate(F_statistic = (beta.exposure^2) / (se.exposure^2))
-      rows_before_f <- nrow(exposure_ivs_dat)
-      exposure_ivs_dat <- exposure_ivs_dat %>%
-        filter(F_statistic >= opt$f_stat)
-      rows_removed_f <- rows_before_f - nrow(exposure_ivs_dat)
-      if (rows_removed_f > 0) {
-        message(sprintf("Removed %d IVs with F-statistic < %f.", rows_removed_f, opt$f_stat))
-      }
-      if (nrow(exposure_ivs_dat) == 0) {
-        stop(sprintf("No IVs remained after F-statistic filtering (F >= %f).", opt$f_stat), call.=FALSE)
-      }
-      message(sprintf("%d IVs remain after F-statistic filtering.", nrow(exposure_ivs_dat)))
-    }
-    exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, opt$mhc_region, opt$exclude_mhc)
-    message("----- Finished Selecting Instruments (Clumping Skipped) -----")
-  } else {
-    message("----- Selecting and Clumping Instruments (LD Clumping Enabled) -----")
-    exposure_ivs_dat <- clump_and_filter_ivs(
-      exposure_dat = exposure_dat,
-      clump_p = opt$clump_p,
-      clump_kb = opt$clump_kb,
-      clump_r2 = opt$clump_r2,
-      ld_ref = opt$ld_ref,
-      plink_bin = opt$plink_bin,
-      min_f_stat = opt$f_stat,
-      mhc_region = opt$mhc_region,
-      exclude_mhc = opt$exclude_mhc
-    )
-  }
+  message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
+
+  # All instrument selection (p-filter -> clump/skip -> format -> F-stat -> MHC)
+  # lives in select_instruments().
+  exposure_ivs_dat <- select_instruments(
+    exposure_raw = exposure_raw,
+    trait_name = exposure_name,
+    clump_p = opt$clump_p,
+    clump_kb = opt$clump_kb,
+    clump_r2 = opt$clump_r2,
+    ld_ref = opt$ld_ref,
+    plink_bin = opt$plink_bin,
+    min_f_stat = opt$f_stat,
+    skip_clump = opt$skip_clump,
+    mhc_region = opt$mhc_region,
+    exclude_mhc = opt$exclude_mhc
+  )
   if (!inherits(exposure_ivs_dat, "data.frame") || nrow(exposure_ivs_dat) == 0) {
     stop("No exposure instruments (IVs) remained after clumping and filtering. Exiting.", call. = FALSE)
   }
