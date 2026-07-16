@@ -268,9 +268,12 @@ flag_mhc_instruments <- function(dat, mhc_region, exclude_mhc = FALSE) {
 warn_non_rsid_instruments <- function(dat) {
   non_rsid <- dat$SNP[!grepl("^rs[0-9]+$", dat$SNP)]
   if (length(non_rsid) > 0) {
-    message(sprintf("NOTE: %d of %d instrument IDs are not rsIDs (e.g. %s). These usually fail rsID-based LD matching/harmonisation and may be dropped.",
-                    length(non_rsid), nrow(dat),
-                    paste(utils::head(non_rsid, 3), collapse = ", ")))
+    n_blank <- sum(!nzchar(non_rsid))
+    examples <- utils::head(unique(non_rsid[nzchar(non_rsid)]), 3)
+    example_str <- if (length(examples) > 0) sprintf("e.g. %s", paste(examples, collapse = ", ")) else "all blank IDs"
+    blank_str <- if (n_blank > 0) sprintf(" (%d are blank)", n_blank) else ""
+    message(sprintf("NOTE: %d of %d instrument IDs are not rsIDs (%s)%s. These usually fail rsID-based LD matching/harmonisation and may be dropped.",
+                    length(non_rsid), nrow(dat), example_str, blank_str))
   }
   invisible(non_rsid)
 }
@@ -556,13 +559,20 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
 #' @return data.table. Prettified and annotated MR results, one row per exposure-outcome-method, and writes the summary to disk.
 process_mr_results <- function(all_mr_results, opt) {
   all_mr_results <- as.data.table(all_mr_results)
-  all_mr_results[, id.exposure:=NULL]
-  all_mr_results[, id.outcome:=NULL]
-  all_mr_results[, lo_ci:=NULL]
-  all_mr_results[, up_ci:=NULL]	
-  all_mr_results[, egger_intercept:=NULL]	
-  all_mr_results[, egger_intercept_se:=NULL]	
-  
+
+  # Drop columns we don't carry forward (only if present).
+  drop_cols <- intersect(c("id.exposure", "id.outcome", "lo_ci", "up_ci",
+                           "egger_intercept", "egger_intercept_se"), names(all_mr_results))
+  if (length(drop_cols)) all_mr_results[, (drop_cols) := NULL]
+
+  # Several columns are only present depending on which methods/sensitivity
+  # tests produced output for a given pair (e.g. MR-PRESSO with no outliers
+  # omits distortion_pval; Wald-only pairs have no Egger/heterogeneity columns).
+  # Add any that are missing as NA so the references below are always valid.
+  ensure_cols <- c("Q", "Q_df", "Q_pval", "egger_intercept_pval",
+                   "distortion_pval", "presso_global_pval")
+  for (col in ensure_cols) if (!col %in% names(all_mr_results)) all_mr_results[, (col) := NA_real_]
+
   cur_mr_result <- all_mr_results
     # Subset IVW and Wald ratio results
     cur_mr_result.IVW <- cur_mr_result[method == "Inverse variance weighted" & nsnp > 2]
