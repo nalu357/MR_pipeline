@@ -421,11 +421,6 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   )
   outcome_dat <- format_gwas(outcome_raw, type = "outcome", trait_name = outcome_name)
   if (!inherits(outcome_dat, "data.frame") || nrow(outcome_dat) == 0) {
-    warning(sprintf("Outcome data loading failed for %s. Skipping.", outcome_file))
-    return(NULL)
-  }
-  outcome_dat <- outcome_dat[outcome_dat$SNP %in% exposure_ivs_dat$SNP, ]
-  if (nrow(outcome_dat) == 0) {
     warning(sprintf("No overlapping IVs found in outcome %s. Skipping.", outcome_file))
     return(NULL)
   }
@@ -492,8 +487,6 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       TwoSampleMR::steiger_filtering(harmonized_dat)
     }, error = function(e) NULL)
     if (!is.null(steiger_results)) {
-      # steiger_results <- as.data.table(steiger_results)
-      # mr_results_dt <- merge(mr_results_dt, steiger_results[, .(SNP, steiger_dir)], by = "SNP", all.x = TRUE)
       steiger_filtered_data <- steiger_results %>%
         filter(steiger_dir == TRUE & steiger_pval < 0.05)
       if (nrow(steiger_filtered_data) > 0 && nrow(steiger_filtered_data) < nrow(harmonized_dat)) {
@@ -570,8 +563,7 @@ process_mr_results <- function(all_mr_results, opt) {
   all_mr_results[, egger_intercept:=NULL]	
   all_mr_results[, egger_intercept_se:=NULL]	
   
-  #for(i in nrow(all_mr_results)){
-    cur_mr_result <- all_mr_results#[i]
+  cur_mr_result <- all_mr_results
     # Subset IVW and Wald ratio results
     cur_mr_result.IVW <- cur_mr_result[method == "Inverse variance weighted" & nsnp > 2]
     cur_mr_result.wald <- cur_mr_result[method == "Wald ratio"]
@@ -584,7 +576,6 @@ process_mr_results <- function(all_mr_results, opt) {
      for (exp in unique(cur_mr_result[outcome==out, exposure])) {
         # MR Egger intercept FDR
         cur_mr_result.MREgger <- cur_mr_result[outcome == out & exposure == exp & method == "MR Egger"]
-        # all_mr_results.MREgger[, egger_intercept_pval_fdr := p.adjust(egger_intercept_pval, method = "fdr")]
         MREgger.sig <- cur_mr_result.MREgger[egger_intercept_pval < 0.05]
         cur_mr_result.IVW$egger_intercept_pval <- cur_mr_result.MREgger$egger_intercept_pval
         
@@ -672,12 +663,10 @@ process_mr_results <- function(all_mr_results, opt) {
         all_mr_results.all <- rbind(all_mr_results.all, cur_mr_result.out, fill = TRUE)
       }
     }
-  #}
-  
+
   # FDR-adjusted p-value
   all_mr_results.all[, distortion_pval:=NULL]
   all_mr_results.all[, p_value_fdr := p.adjust(pval, method = "fdr")]
-  # all_mr_results.all[, p_value_plot := ifelse(p_value_fdr < 0.05 & DiffDirection == FALSE & FlagHeterogeneity == FALSE & FlagPleiotropy == FALSE, 0, 2)]
   results_file <- paste0(opt$out_prefix, "all_processed_mr_results.csv")
   data.table::fwrite(all_mr_results.all, results_file, sep = ",", na = "NA")
   

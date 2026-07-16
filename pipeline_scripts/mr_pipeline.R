@@ -67,8 +67,6 @@ option_list <- list(
   make_option("--exp_p", type="character", default="p_value", help="Exposure: P-value column name"),
   make_option("--exp_eaf", type="character", default="effect_allele_frequency", help="Exposure: Effect Allele Frequency column name"),
   make_option("--exp_n", type="character", default="n", help="Exposure: Sample Size column name"),
-  make_option(c("--exp_ncase"), type="character", default="ncases", help="Exposure: Number of Cases column name (Required for binary outcome + Steiger) [default: %default]"),
-  make_option(c("--exp_type"), type="character", default="binary", help="Exposure type ('binary' or 'continuous') [default: %default]"),
   make_option("--exp_chr", type="character", default="chr", help="Exposure: Chromosome column name"),
   make_option("--exp_pos", type="character", default="pos", help="Exposure: Position column name"),
   # Outcome column names
@@ -149,8 +147,11 @@ if (!is.null(opt$exposure_dir)) {
 
 all_mr_results <- list()
 for (exposure_file in exposure_files) {
-  # Load and clump exposure ONCE per exposure
-  exposure_name <- tools::file_path_sans_ext(basename(exposure_file))
+  # Read exposure and select instruments once per exposure.
+  # exposure_label = unique tag for output filenames; exposure_trait = the
+  # label shown in the results (uses --exp_name when a single exposure is given).
+  exposure_label <- tools::file_path_sans_ext(basename(exposure_file))
+  exposure_trait <- if (length(exposure_files) == 1 && !is.null(opt$exp_name) && opt$exp_name != "Exposure") opt$exp_name else exposure_label
   exp_col_args <- list(
     snp = opt$exp_snp, beta = opt$exp_beta, se = opt$exp_se,
     ea = opt$exp_ea, nea = opt$exp_nea, p = opt$exp_p,
@@ -163,17 +164,17 @@ for (exposure_file in exposure_files) {
     gwas_file = exposure_file,
     type = "exposure",
     col_args = exp_col_args,
-    trait_name = exposure_name,
+    trait_name = exposure_trait,
     tmp_dir = opt$tmp_dir,
     pval_thresh = opt$clump_p
   )
-  message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
+  message(sprintf("Successfully read exposure data for trait '%s'.", exposure_trait))
 
   # All instrument selection (p-filter -> clump/skip -> format -> F-stat -> MHC)
   # lives in select_instruments().
   exposure_ivs_dat <- select_instruments(
     exposure_raw = exposure_raw,
-    trait_name = exposure_name,
+    trait_name = exposure_trait,
     clump_p = opt$clump_p,
     clump_kb = opt$clump_kb,
     clump_r2 = opt$clump_r2,
@@ -197,7 +198,7 @@ for (exposure_file in exposure_files) {
     names(exposure_ivs_dat))
   data.table::fwrite(
     data.table::as.data.table(exposure_ivs_dat)[, ..iv_cols],
-    paste0(opt$out_prefix, exposure_name, "_exposure_ivs.tsv"),
+    paste0(opt$out_prefix, exposure_label, "_exposure_ivs.tsv"),
     sep = "\t", na = "NA")
   
   if (!is.null(opt$outcome_dir)) {
@@ -215,16 +216,17 @@ for (exposure_file in exposure_files) {
   }
   
   for (outcome_file in outcome_files) {
-    outcome_name <- tools::file_path_sans_ext(basename(outcome_file))  # gsub(".*", "", outcome_file,)
-    this_out_prefix <- paste0(opt$out_prefix, exposure_name, "_vs_", outcome_name)
-    
+    outcome_label <- tools::file_path_sans_ext(basename(outcome_file))
+    outcome_trait <- if (length(outcome_files) == 1 && !is.null(opt$out_name) && opt$out_name != "Outcome") opt$out_name else outcome_label
+    this_out_prefix <- paste0(opt$out_prefix, exposure_label, "_vs_", outcome_label)
+
     out_col_args <- list(
       snp = opt$out_snp, beta = opt$out_beta, se = opt$out_se,
       ea = opt$out_ea, nea = opt$out_nea, p = opt$out_p,
       eaf = opt$out_eaf, n = opt$out_n, ncase = opt$out_ncase,
       chr = opt$out_chr, pos = opt$out_pos
     )
-    cur_mr_res <- run_mr_analysis(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, this_out_prefix, opt)
+    cur_mr_res <- run_mr_analysis(exposure_ivs_dat, outcome_file, outcome_trait, out_col_args, this_out_prefix, opt)
     
     all_mr_results[[length(all_mr_results) + 1]] <- cur_mr_res
   }
@@ -234,10 +236,4 @@ all_mr_dt <- data.table::rbindlist(all_mr_results, fill = TRUE)
 process_mr_results(all_mr_dt, opt)
 
 message("All analyses complete.")
-
-# all_mr_results <- list()
-# for(i in c("T2D_merged_vs_PD_merged", "T2D_merged_vs_AD_merged", "LBD_merged_vs_PD_merged", "LBD_merged_vs_AD_merged")){
-#   all_mr_results[[length(all_mr_results) + 1]] <- data.table::fread(paste0("test_output/", i, "_full_mr_results.csv"))
-# }
-
 
