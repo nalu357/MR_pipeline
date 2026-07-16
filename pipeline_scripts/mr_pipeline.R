@@ -21,17 +21,26 @@ get_script_dir <- function() {
 }
 SCRIPT_DIR <- get_script_dir()
 
-# Apply --lib_path before loading any packages (optparse runs later).
+# Resolve the R library BEFORE loading packages (optparse runs later).
+# Precedence: --lib_path (explicit) > repo-local Rpackages/ > R default.
+# The repo-local library lets you `git clone`, install deps into Rpackages/,
+# and run with zero configuration (see install_dependencies.R).
 .raw_args <- commandArgs(trailingOnly = TRUE)
 .libpath_idx <- which(.raw_args == "--lib_path")
+.repo_lib_candidates <- c(file.path(dirname(SCRIPT_DIR), "Rpackages"),
+                          file.path(SCRIPT_DIR, "Rpackages"))
+.repo_lib <- .repo_lib_candidates[dir.exists(.repo_lib_candidates)][1]
 if (length(.libpath_idx) == 1 && length(.raw_args) >= .libpath_idx + 1) {
   .user_lib <- .raw_args[.libpath_idx + 1]
   if (dir.exists(.user_lib)) {
     .libPaths(.user_lib)
-    message(sprintf("Using R library path: %s", .user_lib))
+    message(sprintf("Using R library path (--lib_path): %s", .user_lib))
   } else {
     warning(sprintf("--lib_path '%s' does not exist; ignoring.", .user_lib), call. = FALSE)
   }
+} else if (!is.na(.repo_lib)) {
+  .libPaths(.repo_lib)
+  message(sprintf("Using repo-local R library: %s", .repo_lib))
 }
 
 suppressPackageStartupMessages({
