@@ -429,6 +429,13 @@ select_instruments <- function(exposure_raw, trait_name,
 #' @return data.table of MR results for this exposure-outcome pair (invisible, but also written to disk).
 run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, out_prefix, opt) {
   message(sprintf("Processing outcome: %s", outcome_file))
+  # exp(beta) is an odds ratio only for a binary (log-odds) outcome. For a
+  # continuous outcome we report the beta and its CI (lo_ci/up_ci) and omit the
+  # meaningless OR columns. Controlled by --out_type (default "binary").
+  outcome_is_binary <- !identical(tolower(trimws(as.character(opt$out_type))), "continuous")
+  message(sprintf("Outcome '%s' treated as %s: %s.", outcome_name,
+                  if (outcome_is_binary) "binary" else "continuous",
+                  if (outcome_is_binary) "reporting odds ratios (exp(beta))" else "reporting beta, no OR"))
   outcome_raw <- read_gwas(
     gwas_file = outcome_file,
     type = "outcome",
@@ -491,7 +498,8 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   if (is.null(mr_results)) return(NULL)
   mr_results <- TwoSampleMR::generate_odds_ratios(mr_results)
   mr_results_dt <- data.table::as.data.table(mr_results)
-  
+  if (!outcome_is_binary) mr_results_dt[, c("or", "or_lci95", "or_uci95") := NULL]
+
   if (n_snps >= 3) {
     het_results <- tryCatch({
       data.table::as.data.table(TwoSampleMR::mr_heterogeneity(analysis_dat))
@@ -530,6 +538,7 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
         if (!is.null(steiger_ivw)) {
           steiger_ivw <- TwoSampleMR::generate_odds_ratios(steiger_ivw)
           steiger_ivw_dt <- data.table::as.data.table(steiger_ivw); steiger_ivw_dt$method <- "mr_ivw_steiger"
+          if (!outcome_is_binary) steiger_ivw_dt[, c("or", "or_lci95", "or_uci95") := NULL]
           mr_results_dt <- rbind(mr_results_dt, steiger_ivw_dt, fill = TRUE)
         }
       }
@@ -558,8 +567,12 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       n_outliers <- if (is.null(outlier_indices) || any(is.na(outlier_indices))) 0 else length(outlier_indices)
       presso_main[method == "mr_presso_raw", nsnp := nrow(analysis_dat)]
       presso_main[method == "mr_presso_corrected", nsnp := nrow(analysis_dat) - n_outliers]
-      presso_main[, or := exp(b)]; presso_main[, or_lci95 := exp(b - 1.96 * se)]; presso_main[, or_uci95 := exp(b + 1.96 * se)]
-      cols_to_keep <- c("id.exposure", "id.outcome", "exposure", "outcome", "method", "nsnp", "b", "se", "pval", "or", "or_lci95", "or_uci95")
+      presso_main[, lo_ci := b - 1.96 * se]; presso_main[, up_ci := b + 1.96 * se]
+      cols_to_keep <- c("id.exposure", "id.outcome", "exposure", "outcome", "method", "nsnp", "b", "se", "pval", "lo_ci", "up_ci")
+      if (outcome_is_binary) {
+        presso_main[, or := exp(b)]; presso_main[, or_lci95 := exp(b - 1.96 * se)]; presso_main[, or_uci95 := exp(b + 1.96 * se)]
+        cols_to_keep <- c(cols_to_keep, "or", "or_lci95", "or_uci95")
+      }
       if (!is.null(presso_results$`MR-PRESSO results`$`Distortion Test`$Pvalue)) { presso_main[, distortion_pval := presso_results$`MR-PRESSO results`$`Distortion Test`$Pvalue]; cols_to_keep <- c(cols_to_keep, "distortion_pval") }
       if (!is.null(presso_results$`MR-PRESSO results`$`Global Test`$Pvalue)) { presso_main[, presso_global_pval := presso_results$`MR-PRESSO results`$`Global Test`$Pvalue]; cols_to_keep <- c(cols_to_keep, "presso_global_pval") }
       mr_results_dt <- rbind(mr_results_dt, presso_main[, ..cols_to_keep], fill = TRUE)
@@ -591,8 +604,9 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
 process_mr_results <- function(all_mr_results, opt) {
   all_mr_results <- as.data.table(all_mr_results)
 
-  # Drop columns we don't carry forward (only if present).
-  drop_cols <- intersect(c("id.exposure", "id.outcome", "lo_ci", "up_ci",
+  # Drop columns we don't carry forward (only if present). lo_ci/up_ci (the beta
+  # CI) are kept, so continuous-outcome results retain a CI even without OR cols.
+  drop_cols <- intersect(c("id.exposure", "id.outcome",
                            "egger_intercept", "egger_intercept_se"), names(all_mr_results))
   if (length(drop_cols)) all_mr_results[, (drop_cols) := NULL]
 

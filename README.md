@@ -112,7 +112,7 @@ MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statist
 The script will generate files in the directory specified by the `--out_prefix` argument (e.g., `output/exposure_vs_outcome_*`):
 
 *   `_harmonized_data.rds`: An R Data Serializable file containing the harmonized data frame used for the MR analysis.
-*   `_full_mr_results.csv`: A comma-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run).
+*   `_full_mr_results.csv`: A comma-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run). Effect columns depend on `--out_type`: for a **binary** outcome the file includes odds ratios (`or`, `or_lci95`, `or_uci95` = `exp(beta)`); for a **continuous** outcome the OR columns are omitted and the effect is the beta with its CI (`b`, `lo_ci`, `up_ci`) — since `exp(beta)` is not an odds ratio for a continuous outcome.
 *   `all_processed_mr_results.csv`: A summary file of all processed results and flags based on sensitivity tests.
 *   `_exposure_ivs.tsv`: A table of the genetic variants selected as instruments for the exposure after clumping and F-statistic filtering. Includes chr/pos, alleles, EAF, beta/se/p, F-statistic, and an `mhc` flag column.
 
