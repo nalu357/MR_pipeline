@@ -98,8 +98,15 @@ option_list <- list(
               help="MHC region as CHR:START-END used to flag instruments [default: %default, GRCh37 extended MHC]. Set to match your GWAS build."),
   make_option("--exclude_mhc", action="store_true", default=FALSE,
               help="Drop instruments in --mhc_region instead of just flagging them [default: keep and flag]."),
+  # Proxy search for instruments missing from the outcome (local LD reference)
+  make_option("--proxies", action="store_true", default=FALSE,
+              help="For instruments absent from the outcome, search the LD reference (--ld_ref) for a proxy present in both exposure and outcome, and substitute it."),
+  make_option("--proxy_r2", type="numeric", default=0.8, help="Minimum r2 for an LD proxy [default: %default]."),
+  make_option("--proxy_kb", type="numeric", default=1000, help="Window (kb) to search for LD proxies [default: %default]."),
   # Analysis parameters
   make_option("--f_stat", type="numeric", default=10, help="Minimum F-statistic for IVs"),
+  make_option("--presso_nbdist", type="numeric", default=1000,
+              help="MR-PRESSO number of simulations (NbDistribution). Increase (e.g. 10000) for large instrument sets to stabilise the outlier test [default: %default]."),
   # Output options
   make_option("--tmp_dir", type="character", default="./tmp_pipeline", help="Temporary directory for intermediate files"),
   # Sensitivity analysis options
@@ -235,7 +242,8 @@ for (exposure_file in exposure_files) {
       eaf = opt$out_eaf, n = opt$out_n, ncase = opt$out_ncase,
       chr = opt$out_chr, pos = opt$out_pos
     )
-    cur_mr_res <- run_mr_analysis(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, this_out_prefix, opt)
+    cur_mr_res <- run_mr_analysis(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, this_out_prefix, opt,
+                                  exposure_full = exposure_raw)
     
     all_mr_results[[length(all_mr_results) + 1]] <- cur_mr_res
   }

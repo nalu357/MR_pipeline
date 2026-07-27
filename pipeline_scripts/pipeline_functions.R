@@ -413,6 +413,98 @@ select_instruments <- function(exposure_raw, trait_name,
   return(exposure_ivs_dat)
 }
 
+#' Find LD proxies for a set of query SNPs using a local PLINK reference.
+#'
+#' Runs PLINK `--r2` with `--ld-snp-list` against the LD reference to list, for
+#' each query SNP, all reference SNPs with r2 >= proxy_r2 within proxy_kb.
+#'
+#' @param query_snps Character vector of SNPs to find proxies for.
+#' @param ld_ref PLINK bfile prefix.
+#' @param plink_bin Optional PLINK binary path (else resolved automatically).
+#' @param proxy_r2 Minimum r2.
+#' @param proxy_kb Search window in kb.
+#' @param tmp_dir Directory for temporary files.
+#' @return data.table(query, proxy, r2), excluding self-pairs; empty if none.
+find_proxies <- function(query_snps, ld_ref, plink_bin = NULL,
+                         proxy_r2 = 0.8, proxy_kb = 1000, tmp_dir = tempdir()) {
+  query_snps <- unique(query_snps[!is.na(query_snps) & nzchar(query_snps)])
+  if (length(query_snps) == 0) return(data.table::data.table())
+  if (is.null(ld_ref)) { warning("Proxy search needs --ld_ref; skipping.", call. = FALSE); return(data.table::data.table()) }
+  plink <- resolve_plink(plink_bin)
+  if (is.null(plink)) { warning("No PLINK binary for proxy search; skipping proxies.", call. = FALSE); return(data.table::data.table()) }
+
+  dir.create(tmp_dir, showWarnings = FALSE, recursive = TRUE)
+  snp_file <- tempfile(tmpdir = tmp_dir, fileext = ".snps")
+  out_pref <- tempfile(tmpdir = tmp_dir)
+  writeLines(query_snps, snp_file)
+  ok <- tryCatch(
+    system2(plink, args = c("--bfile", ld_ref, "--r2",
+                            "--ld-snp-list", snp_file,
+                            "--ld-window-kb", format(proxy_kb, scientific = FALSE),
+                            "--ld-window", "99999",
+                            "--ld-window-r2", format(proxy_r2, scientific = FALSE),
+                            "--out", out_pref),
+            stdout = FALSE, stderr = FALSE),
+    error = function(e) 1L)
+  ld_file <- paste0(out_pref, ".ld")
+  if (!file.exists(ld_file)) { warning("Proxy search produced no LD output (check --ld_ref).", call. = FALSE); return(data.table::data.table()) }
+  ld <- tryCatch(data.table::fread(ld_file), error = function(e) NULL)
+  if (is.null(ld) || nrow(ld) == 0) return(data.table::data.table())
+  res <- ld[SNP_A != SNP_B, .(query = SNP_A, proxy = SNP_B, r2 = R2)]
+  res[r2 >= proxy_r2][order(query, -r2)]
+}
+
+#' Substitute LD proxies for instruments missing from the outcome.
+#'
+#' For each exposure instrument absent from the outcome, picks the highest-r2
+#' proxy that is present in BOTH the (full) exposure and the outcome, and swaps
+#' the instrument for that proxy (using the proxy's own effects in both data
+#' sets, so standard harmonisation applies).
+#'
+#' @param exposure_ivs_dat Formatted exposure instruments.
+#' @param outcome_raw Cleaned outcome data.table (already subset to the IVs).
+#' @param exposure_full Cleaned raw exposure (from read_gwas) to source proxy exposure effects.
+#' @param outcome_file,out_col_args Outcome file + column map (to read proxy outcome records).
+#' @param opt Pipeline options.
+#' @return list(exposure, outcome_raw, map) with proxies substituted (map may be NULL).
+apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_file, out_col_args, opt) {
+  unchanged <- list(exposure = exposure_ivs_dat, outcome_raw = outcome_raw, map = NULL)
+  exposure_ivs_dat <- data.table::as.data.table(exposure_ivs_dat)
+  missing <- setdiff(exposure_ivs_dat$SNP, outcome_raw$SNP)
+  if (length(missing) == 0) { message("Proxies: all instruments present in outcome; none needed."); return(unchanged) }
+  message(sprintf("Proxies: %d instrument(s) missing from outcome; searching LD reference (r2>=%g, %gkb).",
+                  length(missing), opt$proxy_r2, opt$proxy_kb))
+  if (is.null(exposure_full)) { warning("Proxy search needs the full exposure; skipping.", call. = FALSE); return(unchanged) }
+  exposure_full <- data.table::as.data.table(exposure_full)
+
+  prox <- find_proxies(missing, opt$ld_ref, opt$plink_bin, opt$proxy_r2, opt$proxy_kb, opt$tmp_dir)
+  if (nrow(prox) == 0) { message("Proxies: none found in the LD reference."); return(unchanged) }
+  # Proxy must have an exposure effect and not already be an instrument.
+  prox <- prox[proxy %in% exposure_full$SNP & !proxy %in% exposure_ivs_dat$SNP]
+  if (nrow(prox) == 0) { message("Proxies: candidates found but none usable from the exposure."); return(unchanged) }
+  # Proxy must be present in the outcome (read outcome records for candidates).
+  proxy_out <- read_gwas(outcome_file, type = "outcome", col_args = out_col_args,
+                         trait_name = if ("trait" %in% names(outcome_raw)) outcome_raw$trait[1] else NULL,
+                         tmp_dir = opt$tmp_dir, keep_snps = unique(prox$proxy), n_total = opt$out_n_total)
+  prox <- prox[proxy %in% proxy_out$SNP]
+  if (nrow(prox) == 0) { message("Proxies: candidates found but none present in the outcome."); return(unchanged) }
+  # One proxy per missing instrument (highest r2).
+  prox <- prox[order(query, -r2)][, .SD[1], by = query]
+
+  # Format proxy exposure records and force the exposure id to match the set.
+  proxy_exp_fmt <- data.table::as.data.table(
+    format_gwas(exposure_full[SNP %in% prox$proxy], type = "exposure",
+                trait_name = exposure_ivs_dat$exposure[1]))
+  proxy_exp_fmt[, `:=`(exposure = exposure_ivs_dat$exposure[1],
+                       id.exposure = exposure_ivs_dat$id.exposure[1])]
+
+  exposure_new <- rbind(exposure_ivs_dat[!SNP %in% prox$query], proxy_exp_fmt, fill = TRUE)
+  outcome_raw_new <- rbind(outcome_raw, proxy_out[SNP %in% prox$proxy], fill = TRUE)
+  message(sprintf("Proxies: substituted %d of %d missing instrument(s).", nrow(prox), length(missing)))
+  list(exposure = exposure_new, outcome_raw = outcome_raw_new,
+       map = prox[, .(instrument = query, proxy, r2)])
+}
+
 #' Run Mendelian Randomization Analysis for an Exposure-Outcome Pair
 #'
 #' Loads, harmonizes, and analyzes a single exposure-outcome pair using the appropriate MR methods
@@ -427,7 +519,8 @@ select_instruments <- function(exposure_raw, trait_name,
 #' @param opt list. List of pipeline options (parsed arguments).
 #'
 #' @return data.table of MR results for this exposure-outcome pair (invisible, but also written to disk).
-run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, out_prefix, opt) {
+run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, out_prefix, opt,
+                            exposure_full = NULL) {
   message(sprintf("Processing outcome: %s", outcome_file))
   # exp(beta) is an odds ratio only for a binary (log-odds) outcome. For a
   # continuous outcome we report the beta and its CI (lo_ci/up_ci) and omit the
@@ -445,6 +538,15 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     keep_snps = exposure_ivs_dat$SNP,
     n_total = opt$out_n_total
   )
+  # Optional: substitute LD proxies for instruments absent from the outcome.
+  if (isTRUE(opt$proxies)) {
+    pr <- apply_proxies(exposure_ivs_dat, outcome_raw, exposure_full, outcome_file, out_col_args, opt)
+    exposure_ivs_dat <- pr$exposure
+    outcome_raw <- pr$outcome_raw
+    if (!is.null(pr$map) && nrow(pr$map) > 0) {
+      data.table::fwrite(pr$map, paste0(out_prefix, "_proxies.tsv"), sep = "\t", na = "NA")
+    }
+  }
   outcome_dat <- format_gwas(outcome_raw, type = "outcome", trait_name = outcome_name)
   if (!inherits(outcome_dat, "data.frame") || nrow(outcome_dat) == 0) {
     warning(sprintf("No overlapping IVs found in outcome %s. Skipping.", outcome_file))
@@ -562,7 +664,8 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
         SdOutcome = "se.outcome", SdExposure = "se.exposure",
         OUTLIERtest = TRUE, DISTORTIONtest = TRUE,
         data = as.data.frame(analysis_dat),
-        NbDistribution = 1000, SignifThreshold = 0.05
+        NbDistribution = if (!is.null(opt$presso_nbdist)) opt$presso_nbdist else 1000,
+        SignifThreshold = 0.05
       )
     }, error = function(e) NULL)
     if (!is.null(presso_results)) {

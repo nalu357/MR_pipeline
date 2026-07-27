@@ -105,7 +105,13 @@ MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statist
 | `--skip_clump` | off | Skip clumping. Only for already-independent (r²<0.001) instruments. |
 | `--mhc_region` | `6:25000000-34000000` | MHC region (CHR:START-END) to flag; set to your build. |
 | `--exclude_mhc` | off | Drop MHC instruments instead of flagging them. |
+| `--proxies` | off | Substitute an LD proxy for any instrument missing from the outcome (uses `--ld_ref`). |
+| `--proxy_r2` | `0.8` | Minimum r² for an LD proxy. |
+| `--proxy_kb` | `1000` | Window (kb) to search for LD proxies. |
+| `--presso_nbdist` | `1000` | MR-PRESSO simulations; raise (e.g. 10000) for large instrument sets. |
 | `--lib_path` | none | Optional custom R library path (no need to edit the script). |
+
+**LD proxies:** with `--proxies`, any instrument that is absent from the outcome GWAS is looked up against the LD reference (`--ld_ref`, via PLINK `--r2`); the highest-r² proxy that is present in **both** the exposure and the outcome (r² ≥ `--proxy_r2`, within `--proxy_kb`) replaces it, using the proxy SNP's own effects in both datasets. Substitutions are written to `<prefix>_proxies.tsv` (`instrument`, `proxy`, `r2`). Requires `--ld_ref`; needs the full exposure summary stats (so the proxy has an exposure effect), so it's most useful when the exposure is a full GWAS rather than a pre-selected signal list.
 
 ## Output Files
 
