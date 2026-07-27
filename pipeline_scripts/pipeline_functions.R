@@ -601,11 +601,6 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   mr_results <- TwoSampleMR::generate_odds_ratios(mr_results)
   mr_results_dt <- data.table::as.data.table(mr_results)
   if (!outcome_is_binary) mr_results_dt[, c("or", "or_lci95", "or_uci95") := NULL]
-<<<<<<< HEAD
-  
-=======
-
->>>>>>> cefc28186b8010bf9669e6f928413ae60ea7130d
   if (n_snps >= 3) {
     het_results <- tryCatch({
       data.table::as.data.table(TwoSampleMR::mr_heterogeneity(analysis_dat))
