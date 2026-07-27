@@ -81,7 +81,7 @@ install_gh <- function(repo, ref) {
     return(invisible(TRUE))
   }
   cat(sprintf("[github] %-13s %s\n", pkg, spec))
-  remotes::install_github(spec, lib = lib, repos = repos, upgrade = "never")
+  remotes::install_github(spec, lib = lib, repos = repos, upgrade = "never", force=T)
 }
 
 # ---- Bootstrap: remotes must exist before install_version/install_github --
