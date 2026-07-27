@@ -105,14 +105,20 @@ MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statist
 | `--skip_clump` | off | Skip clumping. Only for already-independent (r²<0.001) instruments. |
 | `--mhc_region` | `6:25000000-34000000` | MHC region (CHR:START-END) to flag; set to your build. |
 | `--exclude_mhc` | off | Drop MHC instruments instead of flagging them. |
+| `--proxies` | off | Substitute an LD proxy for any instrument missing from the outcome (uses `--ld_ref`). |
+| `--proxy_r2` | `0.8` | Minimum r² for an LD proxy. |
+| `--proxy_kb` | `1000` | Window (kb) to search for LD proxies. |
+| `--presso_nbdist` | `1000` | MR-PRESSO simulations; raise (e.g. 10000) for large instrument sets. |
 | `--lib_path` | none | Optional custom R library path (no need to edit the script). |
+
+**LD proxies:** with `--proxies`, any instrument that is absent from the outcome GWAS is looked up against the LD reference (`--ld_ref`, via PLINK `--r2`); the highest-r² proxy that is present in **both** the exposure and the outcome (r² ≥ `--proxy_r2`, within `--proxy_kb`) replaces it, using the proxy SNP's own effects in both datasets. Substitutions are written to `<prefix>_proxies.tsv` (`instrument`, `proxy`, `r2`). Requires `--ld_ref`; needs the full exposure summary stats (so the proxy has an exposure effect), so it's most useful when the exposure is a full GWAS rather than a pre-selected signal list.
 
 ## Output Files
 
 The script will generate files in the directory specified by the `--out_prefix` argument (e.g., `output/exposure_vs_outcome_*`):
 
 *   `_harmonized_data.rds`: An R Data Serializable file containing the harmonized data frame used for the MR analysis.
-*   `_full_mr_results.csv`: A comma-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run).
+*   `_full_mr_results.csv`: A comma-separated file with the results from all MR methods run, including sensitivity analyses statistics (heterogeneity Q-stat, MR-Egger intercept, MR-PRESSO results if run). Effect columns depend on `--out_type`: for a **binary** outcome the file includes odds ratios (`or`, `or_lci95`, `or_uci95` = `exp(beta)`); for a **continuous** outcome the OR columns are omitted and the effect is the beta with its CI (`b`, `lo_ci`, `up_ci`) — since `exp(beta)` is not an odds ratio for a continuous outcome.
 *   `all_processed_mr_results.csv`: A summary file of all processed results and flags based on sensitivity tests.
 *   `_exposure_ivs.tsv`: A table of the genetic variants selected as instruments for the exposure after clumping and F-statistic filtering. Includes chr/pos, alleles, EAF, beta/se/p, F-statistic, and an `mhc` flag column.
 
