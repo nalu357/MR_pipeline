@@ -483,9 +483,17 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
   prox <- prox[proxy %in% exposure_full$SNP & !proxy %in% exposure_ivs_dat$SNP]
   if (nrow(prox) == 0) { message("Proxies: candidates found but none usable from the exposure."); return(unchanged) }
   # Proxy must be present in the outcome (read outcome records for candidates).
-  proxy_out <- read_gwas(outcome_file, type = "outcome", col_args = out_col_args,
-                         trait_name = if ("trait" %in% names(outcome_raw)) outcome_raw$trait[1] else NULL,
-                         tmp_dir = opt$tmp_dir, keep_snps = unique(prox$proxy), n_total = opt$out_n_total)
+  # read_gwas stop()s if none of keep_snps are found, which is a valid outcome
+  # here (no proxy in the outcome), so catch it and fall back to unchanged.
+  proxy_out <- tryCatch(
+    read_gwas(outcome_file, type = "outcome", col_args = out_col_args,
+              trait_name = if ("trait" %in% names(outcome_raw)) outcome_raw$trait[1] else NULL,
+              tmp_dir = opt$tmp_dir, keep_snps = unique(prox$proxy), n_total = opt$out_n_total),
+    error = function(e) NULL)
+  if (is.null(proxy_out) || nrow(proxy_out) == 0) {
+    message("Proxies: candidate proxies were not found in the outcome; no substitution.")
+    return(unchanged)
+  }
   prox <- prox[proxy %in% proxy_out$SNP]
   if (nrow(prox) == 0) { message("Proxies: candidates found but none present in the outcome."); return(unchanged) }
   # One proxy per missing instrument (highest r2).
@@ -539,12 +547,17 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     n_total = opt$out_n_total
   )
   # Optional: substitute LD proxies for instruments absent from the outcome.
+  # Never let a proxy problem abort the MR: on any error, proceed without proxies.
   if (isTRUE(opt$proxies)) {
-    pr <- apply_proxies(exposure_ivs_dat, outcome_raw, exposure_full, outcome_file, out_col_args, opt)
-    exposure_ivs_dat <- pr$exposure
-    outcome_raw <- pr$outcome_raw
-    if (!is.null(pr$map) && nrow(pr$map) > 0) {
-      data.table::fwrite(pr$map, paste0(out_prefix, "_proxies.tsv"), sep = "\t", na = "NA")
+    pr <- tryCatch(
+      apply_proxies(exposure_ivs_dat, outcome_raw, exposure_full, outcome_file, out_col_args, opt),
+      error = function(e) { warning(sprintf("Proxy substitution failed (%s); proceeding without proxies.", e$message), call. = FALSE); NULL })
+    if (!is.null(pr)) {
+      exposure_ivs_dat <- pr$exposure
+      outcome_raw <- pr$outcome_raw
+      if (!is.null(pr$map) && nrow(pr$map) > 0) {
+        data.table::fwrite(pr$map, paste0(out_prefix, "_proxies.tsv"), sep = "\t", na = "NA")
+      }
     }
   }
   outcome_dat <- format_gwas(outcome_raw, type = "outcome", trait_name = outcome_name)
