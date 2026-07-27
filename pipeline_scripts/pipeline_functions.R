@@ -527,11 +527,16 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   if (opt$steiger) {
     steiger_results <- tryCatch({
       TwoSampleMR::steiger_filtering(analysis_dat)
-    }, error = function(e) NULL)
-    if (!is.null(steiger_results)) {
+    }, error = function(e) { message(sprintf("Steiger filtering failed (needs sample sizes for both traits): %s", e$message)); NULL })
+    if (is.null(steiger_results)) {
+      message("Steiger filtering produced no result (skipped). Check that both traits have a sample size (--*_n / --*_n_total).")
+    } else {
       steiger_filtered_data <- steiger_results %>%
         filter(steiger_dir == TRUE & steiger_pval < 0.05)
-      if (nrow(steiger_filtered_data) > 0 && nrow(steiger_filtered_data) < nrow(analysis_dat)) {
+      n_kept <- nrow(steiger_filtered_data); n_removed <- nrow(analysis_dat) - n_kept
+      message(sprintf("Steiger filtering: %d of %d SNPs pass the exposure->outcome direction test (removed %d).",
+                      n_kept, nrow(analysis_dat), n_removed))
+      if (n_kept > 0 && n_removed > 0) {
         steiger_ivw <- tryCatch({
           TwoSampleMR::mr(steiger_filtered_data, method_list = c("mr_ivw"))
         }, error = function(e) NULL)
@@ -540,7 +545,12 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
           steiger_ivw_dt <- data.table::as.data.table(steiger_ivw); steiger_ivw_dt$method <- "mr_ivw_steiger"
           if (!outcome_is_binary) steiger_ivw_dt[, c("or", "or_lci95", "or_uci95") := NULL]
           mr_results_dt <- rbind(mr_results_dt, steiger_ivw_dt, fill = TRUE)
+          message("Added 'mr_ivw_steiger' (IVW on Steiger-passing SNPs).")
         }
+      } else if (n_removed == 0) {
+        message("Steiger removed no SNPs; the Steiger-filtered IVW equals the main IVW, so no separate 'mr_ivw_steiger' row is added.")
+      } else {
+        message("Steiger removed ALL SNPs; no Steiger IVW computed.")
       }
     }
   }
