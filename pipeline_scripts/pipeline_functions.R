@@ -300,12 +300,22 @@ warn_non_rsid_instruments <- function(dat) {
 #' first column).
 #'
 #' @param file Path to the instrument-list file.
+#' @param col Optional explicit column name holding the SNP IDs; if NULL, a
+#'            SNP-like column is auto-detected (else the first column is used).
 #' @return Character vector of unique, non-empty SNP IDs.
-read_iv_list <- function(file) {
+read_iv_list <- function(file, col = NULL) {
   dt <- data.table::fread(file, header = "auto")
-  snp_col <- names(dt)[tolower(names(dt)) %in%
-                         c("snp", "rsid", "rs_id", "variant", "variant_id", "markername")][1]
-  if (is.na(snp_col)) snp_col <- names(dt)[1]
+  if (!is.null(col)) {
+    if (!col %in% names(dt)) {
+      stop(sprintf("--exp_ivs_col '%s' not found in %s (columns: %s).",
+                   col, basename(file), paste(names(dt), collapse = ", ")), call. = FALSE)
+    }
+    snp_col <- col
+  } else {
+    snp_col <- names(dt)[tolower(names(dt)) %in%
+                           c("snp", "rsid", "rs_id", "variant", "variant_id", "markername")][1]
+    if (is.na(snp_col)) snp_col <- names(dt)[1]
+  }
   ids <- as.character(dt[[snp_col]])
   # Headerless single-column list: the "column name" is really the first ID.
   if (ncol(dt) == 1 && grepl("^(rs[0-9]+|[0-9]+:[0-9]+)", snp_col)) ids <- c(snp_col, ids)

@@ -71,6 +71,7 @@ option_list <- list(
   make_option("--exp_ncase", type="character", default=NULL, help="Exposure: Number of Cases column name. For a BINARY exposure this lets Steiger use the log-odds r2 formula (avoids over-removal)."),
   make_option("--exp_prevalence", type="numeric", default=NULL, help="Exposure: population prevalence for a binary exposure (used by Steiger's log-odds r2; TwoSampleMR assumes 0.1 if unset)."),
   make_option("--exp_ivs", type="character", default=NULL, help="Path to a file listing pre-defined instrument SNP IDs (one per line or a column named SNP/rsid). Instruments are restricted to this list (no clumping), while --exp_gwas provides full summary stats so proxies can be found."),
+  make_option("--exp_ivs_col", type="character", default=NULL, help="Column name holding the SNP IDs in --exp_ivs (default: auto-detect SNP/rsid-like column, else first column)."),
   make_option("--exp_chr", type="character", default="chr", help="Exposure: Chromosome column name"),
   make_option("--exp_pos", type="character", default="pos", help="Exposure: Position column name"),
   # Outcome column names
@@ -179,7 +180,7 @@ for (exposure_file in exposure_files) {
   # still provides summary stats for proxy lookup).
   iv_list <- NULL
   if (!is.null(opt$exp_ivs)) {
-    iv_list <- read_iv_list(opt$exp_ivs)
+    iv_list <- read_iv_list(opt$exp_ivs, col = opt$exp_ivs_col)
     message(sprintf("Loaded %d pre-defined instrument IDs from %s.", length(iv_list), opt$exp_ivs))
   }
   # Read + clean the exposure (cheap; pre-filtered by p-value so format_data
