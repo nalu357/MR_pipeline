@@ -426,7 +426,8 @@ select_instruments <- function(exposure_raw, trait_name,
 #' @param tmp_dir Directory for temporary files.
 #' @return data.table(query, proxy, r2), excluding self-pairs; empty if none.
 find_proxies <- function(query_snps, ld_ref, plink_bin = NULL,
-                         proxy_r2 = 0.8, proxy_kb = 1000, tmp_dir = tempdir()) {
+                         proxy_r2 = 0.8, proxy_kb = 1000, tmp_dir = tempdir(),
+                         plink_mem = 30000) {
   query_snps <- unique(query_snps[!is.na(query_snps) & nzchar(query_snps)])
   if (length(query_snps) == 0) return(data.table::data.table())
   if (is.null(ld_ref)) { warning("Proxy search needs --ld_ref; skipping.", call. = FALSE); return(data.table::data.table()) }
@@ -443,6 +444,8 @@ find_proxies <- function(query_snps, ld_ref, plink_bin = NULL,
                             "--ld-window-kb", format(proxy_kb, scientific = FALSE),
                             "--ld-window", "99999",
                             "--ld-window-r2", format(proxy_r2, scientific = FALSE),
+                            "--memory", format(plink_mem, scientific = FALSE),
+                            "--threads", "1",
                             "--out", out_pref),
             stdout = FALSE, stderr = FALSE),
     error = function(e) 1L)
@@ -477,7 +480,8 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
   if (is.null(exposure_full)) { warning("Proxy search needs the full exposure; skipping.", call. = FALSE); return(unchanged) }
   exposure_full <- data.table::as.data.table(exposure_full)
 
-  prox <- find_proxies(missing, opt$ld_ref, opt$plink_bin, opt$proxy_r2, opt$proxy_kb, opt$tmp_dir)
+  prox <- find_proxies(missing, opt$ld_ref, opt$plink_bin, opt$proxy_r2, opt$proxy_kb, opt$tmp_dir,
+                       plink_mem = if (!is.null(opt$proxy_mem)) opt$proxy_mem else 30000)
   if (nrow(prox) == 0) { message("Proxies: none found in the LD reference."); return(unchanged) }
   # Proxy must have an exposure effect and not already be an instrument.
   prox <- prox[proxy %in% exposure_full$SNP & !proxy %in% exposure_ivs_dat$SNP]

@@ -103,6 +103,7 @@ option_list <- list(
               help="For instruments absent from the outcome, search the LD reference (--ld_ref) for a proxy present in both exposure and outcome, and substitute it."),
   make_option("--proxy_r2", type="numeric", default=0.8, help="Minimum r2 for an LD proxy [default: %default]."),
   make_option("--proxy_kb", type="numeric", default=1000, help="Window (kb) to search for LD proxies [default: %default]."),
+  make_option("--proxy_mem", type="numeric", default=30000, help="Memory (MB) cap for the PLINK proxy search, to avoid it reserving half the node's RAM [default: %default]."),
   # Analysis parameters
   make_option("--f_stat", type="numeric", default=10, help="Minimum F-statistic for IVs"),
   make_option("--presso_nbdist", type="numeric", default=1000,
