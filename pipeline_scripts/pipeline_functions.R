@@ -642,7 +642,14 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     }
   }
   
-  if (opt$steiger) {
+  # Steiger needs a valid (non-NA) sample size for BOTH traits; without it the
+  # r2 values are undefined (NaN) and the test is meaningless, so skip loudly.
+  steiger_has_n <- all(c("samplesize.exposure", "samplesize.outcome") %in% names(analysis_dat)) &&
+    any(is.finite(suppressWarnings(as.numeric(analysis_dat$samplesize.exposure)))) &&
+    any(is.finite(suppressWarnings(as.numeric(analysis_dat$samplesize.outcome))))
+  if (opt$steiger && !steiger_has_n) {
+    message("Steiger filtering skipped: needs a sample size for BOTH traits (map --exp_n/--out_n or set --exp_n_total/--out_n_total).")
+  } else if (opt$steiger) {
     steiger_results <- tryCatch({
       TwoSampleMR::steiger_filtering(analysis_dat)
     }, error = function(e) { message(sprintf("Steiger filtering failed (needs sample sizes for both traits): %s", e$message)); NULL })
