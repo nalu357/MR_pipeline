@@ -118,6 +118,7 @@ option_list <- list(
   # Sensitivity analysis options
   make_option("--steiger", type="logical", action="store_true", default=TRUE, help="Run Steiger filtering"),
   make_option("--no_steiger", action="store_false", dest="steiger"),
+  make_option("--steiger_logodds", action="store_true", default=FALSE, help="Use the log-odds r2 (get_r_from_lor) for binary traits in Steiger. Only self-consistent when BOTH traits are binary; for mixed binary/continuous it can swing Steiger to remove ~all or ~none - leave off unless both traits are binary."),
   make_option("--presso", type="logical", action="store_true", default=TRUE, help="Run MR-PRESSO outlier test"),
   make_option("--no_presso", action="store_false", dest="presso")
 )

@@ -530,10 +530,14 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
 
   prox <- find_proxies(missing, opt$ld_ref, opt$plink_bin, opt$proxy_r2, opt$proxy_kb, opt$tmp_dir,
                        plink_mem = if (!is.null(opt$proxy_mem)) opt$proxy_mem else 30000)
-  if (nrow(prox) == 0) { message("Proxies: none found in the LD reference."); return(unchanged) }
+  if (nrow(prox) == 0) { message("Proxies: no LD partner (r2>=", opt$proxy_r2, ") found for any missing instrument."); return(unchanged) }
+  message(sprintf("Proxies:   LD reference returned %d partner(s), covering %d/%d missing instruments.",
+                  nrow(prox), length(unique(prox$query)), length(missing)))
   # Proxy must have an exposure effect and not already be an instrument.
   prox <- prox[proxy %in% exposure_full$SNP & !proxy %in% exposure_ivs_dat$SNP]
   if (nrow(prox) == 0) { message("Proxies: candidates found but none usable from the exposure."); return(unchanged) }
+  message(sprintf("Proxies:   %d partner(s) present in the exposure (covering %d/%d missing).",
+                  nrow(prox), length(unique(prox$query)), length(missing)))
   # Proxy must be present in the outcome (read outcome records for candidates).
   # read_gwas stop()s if none of keep_snps are found, which is a valid outcome
   # here (no proxy in the outcome), so catch it and fall back to unchanged.
@@ -548,6 +552,8 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
   }
   prox <- prox[proxy %in% proxy_out$SNP]
   if (nrow(prox) == 0) { message("Proxies: candidates found but none present in the outcome."); return(unchanged) }
+  message(sprintf("Proxies:   %d partner(s) present in BOTH exposure and outcome (covering %d/%d missing).",
+                  nrow(prox), length(unique(prox$query)), length(missing)))
   # One proxy per missing instrument (highest r2).
   prox <- prox[order(query, -r2)][, .SD[1], by = query]
 
@@ -560,7 +566,9 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
 
   exposure_new <- rbind(exposure_ivs_dat[!SNP %in% prox$query], proxy_exp_fmt, fill = TRUE)
   outcome_raw_new <- rbind(outcome_raw, proxy_out[SNP %in% prox$proxy], fill = TRUE)
-  message(sprintf("Proxies: substituted %d of %d missing instrument(s).", nrow(prox), length(missing)))
+  n_sub <- nrow(prox); n_missing <- length(missing)
+  message(sprintf("Proxies: SUBSTITUTED %d of %d missing instrument(s); %d could not be rescued (no proxy in both datasets). Mapping -> <prefix>_proxies.tsv",
+                  n_sub, n_missing, n_missing - n_sub))
   list(exposure = exposure_new, outcome_raw = outcome_raw_new,
        map = prox[, .(instrument = query, proxy, r2)])
 }
@@ -690,19 +698,25 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     }
   }
   
-  # For a binary trait (case counts present), tell Steiger to use the log-odds
-  # r2 (get_r_from_lor) rather than under-estimating it; set prevalence if given
-  # (TwoSampleMR assumes 0.1 otherwise). Affects only Steiger, not the MR methods.
-  if ("ncase.exposure" %in% names(analysis_dat) &&
-      any(is.finite(suppressWarnings(as.numeric(analysis_dat$ncase.exposure))))) {
-    analysis_dat$units.exposure <- "log odds"
-    if (!is.null(opt$exp_prevalence)) analysis_dat$prevalence.exposure <- opt$exp_prevalence
-    message("Binary exposure (case counts present): Steiger will use the log-odds r2 formula.")
-  }
-  if ("ncase.outcome" %in% names(analysis_dat) &&
-      any(is.finite(suppressWarnings(as.numeric(analysis_dat$ncase.outcome))))) {
-    analysis_dat$units.outcome <- "log odds"
-    if (!is.null(opt$out_prevalence)) analysis_dat$prevalence.outcome <- opt$out_prevalence
+  # Optional: for a binary trait (case counts present), tell Steiger to use the
+  # log-odds r2 (get_r_from_lor). This is OPT-IN (--steiger_logodds) because it
+  # is only self-consistent when BOTH traits are binary: mixing a log-odds
+  # (liability-scale) r2 for one trait with a continuous r2 for the other is
+  # not calibrated and can swing Steiger to remove ~all or ~none of the SNPs.
+  # Affects only Steiger, not the MR estimates.
+  if (isTRUE(opt$steiger_logodds)) {
+    if ("ncase.exposure" %in% names(analysis_dat) &&
+        any(is.finite(suppressWarnings(as.numeric(analysis_dat$ncase.exposure))))) {
+      analysis_dat$units.exposure <- "log odds"
+      if (!is.null(opt$exp_prevalence)) analysis_dat$prevalence.exposure <- opt$exp_prevalence
+      message("--steiger_logodds: binary exposure -> Steiger uses the log-odds r2 formula.")
+    }
+    if ("ncase.outcome" %in% names(analysis_dat) &&
+        any(is.finite(suppressWarnings(as.numeric(analysis_dat$ncase.outcome))))) {
+      analysis_dat$units.outcome <- "log odds"
+      if (!is.null(opt$out_prevalence)) analysis_dat$prevalence.outcome <- opt$out_prevalence
+      message("--steiger_logodds: binary outcome -> Steiger uses the log-odds r2 formula.")
+    }
   }
 
   # Steiger needs a valid (non-NA) sample size for BOTH traits; without it the
