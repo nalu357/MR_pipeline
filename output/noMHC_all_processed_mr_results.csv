@@ -1,0 +1,2 @@
+method,outcome,exposure,nsnp,b,se,pval,or,or_lci95,or_uci95,Q,Q_df,Q_pval,egger_intercept_pval,presso_global_pval,I2,presso_distortion_pval,DiffDirection,FlagPleiotropy,FlagHeterogeneity,FlagSteiger,p_value_fdr
+"Inverse variance weighted","asthma","ReproGen",206,0.00137323423644666,0.00491150735076839,0.779788034455561,1.00137417755433,0.991780644969904,1.01106050875094,646.095115312757,205,3.78089990891651e-47,0.493795975158921,"<0.001",0.682709255740519,0.807,TRUE,FALSE,TRUE,NA,0.779788034455561

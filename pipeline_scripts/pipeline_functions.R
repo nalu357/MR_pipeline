@@ -53,7 +53,7 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
   if (!is.null(col_args$n)) col_map$samplesize <- col_args$n
   if (!is.null(col_args$chr)) col_map$chr <- col_args$chr
   if (!is.null(col_args$pos)) col_map$pos <- col_args$pos
-  if (type == "outcome" && !is.null(col_args$ncase)) {
+  if (!is.null(col_args$ncase)) {   # read ncase for exposure or outcome (binary Steiger)
     col_map$ncase <- col_args$ncase
   }
   
@@ -293,6 +293,36 @@ warn_non_rsid_instruments <- function(dat) {
   invisible(non_rsid)
 }
 
+#' Read a list of pre-defined instrument SNP IDs from a file.
+#'
+#' Accepts a one-per-line list (no header) or a table with a SNP-like column
+#' (SNP/rsid/rs_id/variant/variant_id/markername, case-insensitive; else the
+#' first column).
+#'
+#' @param file Path to the instrument-list file.
+#' @param col Optional explicit column name holding the SNP IDs; if NULL, a
+#'            SNP-like column is auto-detected (else the first column is used).
+#' @return Character vector of unique, non-empty SNP IDs.
+read_iv_list <- function(file, col = NULL) {
+  dt <- data.table::fread(file, header = "auto")
+  if (!is.null(col)) {
+    if (!col %in% names(dt)) {
+      stop(sprintf("--exp_ivs_col '%s' not found in %s (columns: %s).",
+                   col, basename(file), paste(names(dt), collapse = ", ")), call. = FALSE)
+    }
+    snp_col <- col
+  } else {
+    snp_col <- names(dt)[tolower(names(dt)) %in%
+                           c("snp", "rsid", "rs_id", "variant", "variant_id", "markername")][1]
+    if (is.na(snp_col)) snp_col <- names(dt)[1]
+  }
+  ids <- as.character(dt[[snp_col]])
+  # Headerless single-column list: the "column name" is really the first ID.
+  if (ncol(dt) == 1 && grepl("^(rs[0-9]+|[0-9]+:[0-9]+)", snp_col)) ids <- c(snp_col, ids)
+  ids <- unique(ids)
+  ids[!is.na(ids) & nzchar(ids)]
+}
+
 #' Resolve the PLINK binary path.
 #'
 #' Uses an explicit path if given, else tries genetics.binaRies, else relies on
@@ -338,7 +368,7 @@ resolve_plink <- function(plink_bin = NULL) {
 select_instruments <- function(exposure_raw, trait_name,
                                clump_p = 5e-8, clump_kb = 10000, clump_r2 = 0.001,
                                ld_ref = NULL, plink_bin = NULL, min_f_stat = 10,
-                               skip_clump = FALSE,
+                               skip_clump = FALSE, iv_list = NULL,
                                mhc_region = "6:25000000-34000000", exclude_mhc = FALSE) {
   
   message("----- Selecting Instruments -----")
@@ -352,9 +382,23 @@ select_instruments <- function(exposure_raw, trait_name,
   }
   message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(candidates), clump_p))
   warn_non_rsid_instruments(candidates)
+<<<<<<< HEAD
   
   # 2. Independence: LD clump (default) or skip for already-independent inputs
   if (skip_clump) {
+=======
+
+  # 2. Independence: pre-defined list, LD clump (default), or skip.
+  if (!is.null(iv_list)) {
+    selected_snps <- intersect(candidates$SNP, iv_list)
+    if (length(selected_snps) == 0) {
+      stop("None of the pre-defined instruments (--exp_ivs) are present in the exposure at p<clump_p.", call. = FALSE)
+    }
+    message(sprintf("Using %d pre-defined instruments present in the exposure (of %d listed).",
+                    length(selected_snps), length(unique(iv_list))))
+    warning("--exp_ivs: instruments taken as given (no clumping). Ensure the list is independent at MR standard (r2<0.001).", call. = FALSE)
+  } else if (skip_clump) {
+>>>>>>> 84899fbbdca00581e4376b6313c1d064fc4daecb
     warning("--skip_clump: treating inputs as already independent at MR standard (r2<0.001). ",
             "Gene-mapping / GCTA-COJO signal lists are typically only independent at r2<0.05 and are ",
             "NOT safe this way (correlated instruments understate IVW SEs). If unsure, re-run WITHOUT ",
@@ -401,11 +445,15 @@ select_instruments <- function(exposure_raw, trait_name,
   
   # 5. Flag / optionally drop MHC instruments (long-range LD + pleiotropy)
   exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, mhc_region, exclude_mhc)
+<<<<<<< HEAD
   
+=======
+
+  sel_desc <- if (!is.null(iv_list)) "from --exp_ivs list" else if (skip_clump) "kept (no clump)" else sprintf("clumped (r2<%g, %dkb)", clump_r2, clump_kb)
+>>>>>>> 84899fbbdca00581e4376b6313c1d064fc4daecb
   message(sprintf(
     "Instrument attrition: %d input -> %d candidates (p<%g) -> %d %s -> %d after F>=%g%s.",
-    n_input, nrow(candidates), clump_p, length(selected_snps),
-    if (skip_clump) "kept (no clump)" else sprintf("clumped (r2<%g, %dkb)", clump_r2, clump_kb),
+    n_input, nrow(candidates), clump_p, length(selected_snps), sel_desc,
     nrow(exposure_ivs_dat), min_f_stat,
     if (!exclude_mhc && "mhc" %in% names(exposure_ivs_dat)) sprintf(" (incl. %d MHC flagged)", sum(exposure_ivs_dat$mhc)) else ""))
   message("----- Finished Selecting Instruments -----")
@@ -642,6 +690,21 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     }
   }
   
+  # For a binary trait (case counts present), tell Steiger to use the log-odds
+  # r2 (get_r_from_lor) rather than under-estimating it; set prevalence if given
+  # (TwoSampleMR assumes 0.1 otherwise). Affects only Steiger, not the MR methods.
+  if ("ncase.exposure" %in% names(analysis_dat) &&
+      any(is.finite(suppressWarnings(as.numeric(analysis_dat$ncase.exposure))))) {
+    analysis_dat$units.exposure <- "log odds"
+    if (!is.null(opt$exp_prevalence)) analysis_dat$prevalence.exposure <- opt$exp_prevalence
+    message("Binary exposure (case counts present): Steiger will use the log-odds r2 formula.")
+  }
+  if ("ncase.outcome" %in% names(analysis_dat) &&
+      any(is.finite(suppressWarnings(as.numeric(analysis_dat$ncase.outcome))))) {
+    analysis_dat$units.outcome <- "log odds"
+    if (!is.null(opt$out_prevalence)) analysis_dat$prevalence.outcome <- opt$out_prevalence
+  }
+
   # Steiger needs a valid (non-NA) sample size for BOTH traits; without it the
   # r2 values are undefined (NaN) and the test is meaningless, so skip loudly.
   steiger_has_n <- all(c("samplesize.exposure", "samplesize.outcome") %in% names(analysis_dat)) &&
@@ -661,6 +724,10 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       n_kept <- nrow(steiger_filtered_data); n_removed <- nrow(analysis_dat) - n_kept
       message(sprintf("Steiger filtering: %d of %d SNPs pass the exposure->outcome direction test (removed %d).",
                       n_kept, nrow(analysis_dat), n_removed))
+      if (n_removed > 0.5 * nrow(analysis_dat)) {
+        message(sprintf("WARNING: Steiger removed a large fraction (%d/%d = %.0f%%). This often reflects mis-specified trait variance (e.g. a BINARY trait analysed without case counts + prevalence, so its r^2 is under-estimated) rather than true reverse causation. Interpret 'mr_ivw_steiger' with caution.",
+                        n_removed, nrow(analysis_dat), 100 * n_removed / nrow(analysis_dat)))
+      }
       if (n_kept > 0 && n_removed > 0) {
         steiger_ivw <- tryCatch({
           TwoSampleMR::mr(steiger_filtered_data, method_list = c("mr_ivw"))
@@ -681,16 +748,21 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   }
   
   if (opt$presso && n_snps >= 4 && requireNamespace("MRPRESSO", quietly = TRUE)) {
+    nbdist <- if (!is.null(opt$presso_nbdist)) opt$presso_nbdist else 1000
+    message(sprintf("Running MR-PRESSO on %d SNPs (NbDistribution=%d)... cost scales ~n_snps^2 x NbDistribution, so this can be slow for large/high settings (use --clump_r2 0.001 for fewer, independent instruments, or --no_presso to skip).",
+                    n_snps, nbdist))
+    presso_t0 <- Sys.time()
     presso_results <- tryCatch({
       MRPRESSO::mr_presso(
         BetaOutcome = "beta.outcome", BetaExposure = "beta.exposure",
         SdOutcome = "se.outcome", SdExposure = "se.exposure",
         OUTLIERtest = TRUE, DISTORTIONtest = TRUE,
         data = as.data.frame(analysis_dat),
-        NbDistribution = if (!is.null(opt$presso_nbdist)) opt$presso_nbdist else 1000,
+        NbDistribution = nbdist,
         SignifThreshold = 0.05
       )
     }, error = function(e) NULL)
+    message(sprintf("MR-PRESSO finished in %.1f min.", as.numeric(difftime(Sys.time(), presso_t0, units = "mins"))))
     if (!is.null(presso_results)) {
       global_pval <- presso_results$`MR-PRESSO results`$`Global Test`$Pvalue
       message(sprintf("MR-PRESSO Global P-value: %s", global_pval))

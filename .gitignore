@@ -6,3 +6,5 @@ prettify
 test_outcome/
 test_exposure/
 Rpackages/
+tmp_pipeline/
+output/

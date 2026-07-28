@@ -1,0 +1,2 @@
+method,outcome,exposure,nsnp,b,se,pval,or,or_lci95,or_uci95,Q,Q_df,Q_pval,egger_intercept_pval,presso_global_pval,I2,presso_distortion_pval,DiffDirection,FlagPleiotropy,FlagHeterogeneity,FlagSteiger,p_value_fdr
+"Inverse variance weighted","asthma","POI",15,0.0303442987198079,0.0537902293384947,0.572670512519829,1.03080937921326,0.927665048205814,1.14542202309887,213.947195172682,14,7.67542505464067e-38,0.411965724475913,"<0.001",0.93456329264471,0.021,TRUE,FALSE,TRUE,NA,0.572670512519829

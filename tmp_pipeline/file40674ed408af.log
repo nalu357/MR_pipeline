@@ -1,0 +1,29 @@
+PLINK v1.90b6.21 64-bit (19 Oct 2020)
+Options in effect:
+  --bfile /rfs/project/rfs-mpB3sSsgAn4/Studies/1000GP_Phase3_genotyped/superpopulation/Phase3_eur
+  --ld-snp-list ./tmp_pipeline/file40673e72d570.snps
+  --ld-window 99999
+  --ld-window-kb 1000
+  --ld-window-r2 0.8
+  --memory 30000
+  --out ./tmp_pipeline/file40674ed408af
+  --r2
+  --threads 1
+
+Hostname: cpu-p-157
+Working directory: /rfs/project/rfs-mpB3sSsgAn4/Studies/People/Ana/MR_pipeline
+Start time: Tue Jul 28 12:28:19 2026
+
+Random number seed: 1785238099
+385057 MB RAM detected; reserving 30000 MB for main workspace.
+80782134 variants loaded from .bim file.
+503 people (0 males, 0 females, 503 ambiguous) loaded from .fam.
+Ambiguous sex IDs written to ./tmp_pipeline/file40674ed408af.nosex .
+Using 1 thread.
+Before main variant filters, 503 founders and 0 nonfounders present.
+Calculating allele frequencies... done.
+80782134 variants and 503 people pass filters and QC.
+Note: No phenotypes present.
+--r2 to ./tmp_pipeline/file40674ed408af.ld ... done.
+
+End time: Tue Jul 28 12:30:30 2026

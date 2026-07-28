@@ -68,6 +68,10 @@ option_list <- list(
   make_option("--exp_eaf", type="character", default="effect_allele_frequency", help="Exposure: Effect Allele Frequency column name"),
   make_option("--exp_n", type="character", default="n", help="Exposure: Sample Size column name"),
   make_option("--exp_n_total", type="numeric", default=NULL, help="Exposure: total sample size, applied as a constant N to every SNP when no per-SNP N column exists (enables Steiger)."),
+  make_option("--exp_ncase", type="character", default=NULL, help="Exposure: Number of Cases column name. For a BINARY exposure this lets Steiger use the log-odds r2 formula (avoids over-removal)."),
+  make_option("--exp_prevalence", type="numeric", default=NULL, help="Exposure: population prevalence for a binary exposure (used by Steiger's log-odds r2; TwoSampleMR assumes 0.1 if unset)."),
+  make_option("--exp_ivs", type="character", default=NULL, help="Path to a file listing pre-defined instrument SNP IDs (one per line or a column named SNP/rsid). Instruments are restricted to this list (no clumping), while --exp_gwas provides full summary stats so proxies can be found."),
+  make_option("--exp_ivs_col", type="character", default=NULL, help="Column name holding the SNP IDs in --exp_ivs (default: auto-detect SNP/rsid-like column, else first column)."),
   make_option("--exp_chr", type="character", default="chr", help="Exposure: Chromosome column name"),
   make_option("--exp_pos", type="character", default="pos", help="Exposure: Position column name"),
   # Outcome column names
@@ -82,6 +86,7 @@ option_list <- list(
   make_option("--out_n", type="character", default="n", help="Outcome: Sample Size column name"),
   make_option("--out_n_total", type="numeric", default=NULL, help="Outcome: total sample size, applied as a constant N to every SNP when no per-SNP N column exists (needed for Steiger)."),
   make_option("--out_ncase", type="character", default="ncases", help="Outcome: Number of Cases column name"),
+  make_option("--out_prevalence", type="numeric", default=NULL, help="Outcome: population prevalence for a binary outcome (used by Steiger's log-odds r2; TwoSampleMR assumes 0.1 if unset)."),
   make_option("--out_type", type="character", default="binary", help="Outcome type ('binary' or 'continuous')"),
   make_option("--out_chr", type="character", default="chr", help="Outcome: Chromosome column name"),
   make_option("--out_pos", type="character", default="pos", help="Outcome: Position column name"),
@@ -168,8 +173,16 @@ for (exposure_file in exposure_files) {
   exp_col_args <- list(
     snp = opt$exp_snp, beta = opt$exp_beta, se = opt$exp_se,
     ea = opt$exp_ea, nea = opt$exp_nea, p = opt$exp_p,
-    eaf = opt$exp_eaf, n = opt$exp_n, chr = opt$exp_chr, pos = opt$exp_pos
+    eaf = opt$exp_eaf, n = opt$exp_n, ncase = opt$exp_ncase,
+    chr = opt$exp_chr, pos = opt$exp_pos
   )
+  # Optional pre-defined instrument list (restricts instruments; full --exp_gwas
+  # still provides summary stats for proxy lookup).
+  iv_list <- NULL
+  if (!is.null(opt$exp_ivs)) {
+    iv_list <- read_iv_list(opt$exp_ivs, col = opt$exp_ivs_col)
+    message(sprintf("Loaded %d pre-defined instrument IDs from %s.", length(iv_list), opt$exp_ivs))
+  }
   # Read + clean the exposure (cheap; pre-filtered by p-value so format_data
   # later runs only on the selected instruments). Full summary stats are the
   # assumed input; --skip_clump handles pre-independent signal lists.
@@ -196,6 +209,7 @@ for (exposure_file in exposure_files) {
     plink_bin = opt$plink_bin,
     min_f_stat = opt$f_stat,
     skip_clump = opt$skip_clump,
+    iv_list = iv_list,
     mhc_region = opt$mhc_region,
     exclude_mhc = opt$exclude_mhc
   )
