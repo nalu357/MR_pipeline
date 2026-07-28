@@ -682,16 +682,21 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
   }
   
   if (opt$presso && n_snps >= 4 && requireNamespace("MRPRESSO", quietly = TRUE)) {
+    nbdist <- if (!is.null(opt$presso_nbdist)) opt$presso_nbdist else 1000
+    message(sprintf("Running MR-PRESSO on %d SNPs (NbDistribution=%d)... cost scales ~n_snps^2 x NbDistribution, so this can be slow for large/high settings (use --clump_r2 0.001 for fewer, independent instruments, or --no_presso to skip).",
+                    n_snps, nbdist))
+    presso_t0 <- Sys.time()
     presso_results <- tryCatch({
       MRPRESSO::mr_presso(
         BetaOutcome = "beta.outcome", BetaExposure = "beta.exposure",
         SdOutcome = "se.outcome", SdExposure = "se.exposure",
         OUTLIERtest = TRUE, DISTORTIONtest = TRUE,
         data = as.data.frame(analysis_dat),
-        NbDistribution = if (!is.null(opt$presso_nbdist)) opt$presso_nbdist else 1000,
+        NbDistribution = nbdist,
         SignifThreshold = 0.05
       )
     }, error = function(e) NULL)
+    message(sprintf("MR-PRESSO finished in %.1f min.", as.numeric(difftime(Sys.time(), presso_t0, units = "mins"))))
     if (!is.null(presso_results)) {
       global_pval <- presso_results$`MR-PRESSO results`$`Global Test`$Pvalue
       message(sprintf("MR-PRESSO Global P-value: %s", global_pval))
