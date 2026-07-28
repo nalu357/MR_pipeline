@@ -382,11 +382,6 @@ select_instruments <- function(exposure_raw, trait_name,
   }
   message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(candidates), clump_p))
   warn_non_rsid_instruments(candidates)
-<<<<<<< HEAD
-  
-  # 2. Independence: LD clump (default) or skip for already-independent inputs
-  if (skip_clump) {
-=======
 
   # 2. Independence: pre-defined list, LD clump (default), or skip.
   if (!is.null(iv_list)) {
@@ -398,7 +393,6 @@ select_instruments <- function(exposure_raw, trait_name,
                     length(selected_snps), length(unique(iv_list))))
     warning("--exp_ivs: instruments taken as given (no clumping). Ensure the list is independent at MR standard (r2<0.001).", call. = FALSE)
   } else if (skip_clump) {
->>>>>>> 84899fbbdca00581e4376b6313c1d064fc4daecb
     warning("--skip_clump: treating inputs as already independent at MR standard (r2<0.001). ",
             "Gene-mapping / GCTA-COJO signal lists are typically only independent at r2<0.05 and are ",
             "NOT safe this way (correlated instruments understate IVW SEs). If unsure, re-run WITHOUT ",
@@ -445,12 +439,8 @@ select_instruments <- function(exposure_raw, trait_name,
   
   # 5. Flag / optionally drop MHC instruments (long-range LD + pleiotropy)
   exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, mhc_region, exclude_mhc)
-<<<<<<< HEAD
-  
-=======
 
   sel_desc <- if (!is.null(iv_list)) "from --exp_ivs list" else if (skip_clump) "kept (no clump)" else sprintf("clumped (r2<%g, %dkb)", clump_r2, clump_kb)
->>>>>>> 84899fbbdca00581e4376b6313c1d064fc4daecb
   message(sprintf(
     "Instrument attrition: %d input -> %d candidates (p<%g) -> %d %s -> %d after F>=%g%s.",
     n_input, nrow(candidates), clump_p, length(selected_snps), sel_desc,
