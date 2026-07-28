@@ -103,6 +103,9 @@ MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statist
 | `--clump_kb` | `10000` | Clumping window (kb). |
 | `--clump_p` | `5e-8` | P-value threshold for instrument selection. |
 | `--skip_clump` | off | Skip clumping. Only for already-independent (r²<0.001) instruments. |
+| `--exp_ivs` | none | File of pre-defined instrument SNP IDs; instruments are restricted to this list (no clumping) while `--exp_gwas` provides full summary stats so proxies can be found. |
+| `--exp_ncase` / `--out_ncase` | / `ncases` | Case-count column; for a **binary** trait this makes Steiger use the log-odds r² (avoids over-removal). |
+| `--exp_prevalence` / `--out_prevalence` | none | Population prevalence for a binary trait's Steiger r² (TwoSampleMR assumes 0.1 if unset). |
 | `--mhc_region` | `6:25000000-34000000` | MHC region (CHR:START-END) to flag; set to your build. |
 | `--exclude_mhc` | off | Drop MHC instruments instead of flagging them. |
 | `--proxies` | off | Substitute an LD proxy for any instrument missing from the outcome (uses `--ld_ref`). |
