@@ -63,12 +63,27 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
     stop("Internal error: Not all essential columns mapped.", call. = FALSE)
   }
   
-  # Columns to select from the file are the values in col_map
-  select_cols_file <- unname(unlist(col_map))
-  
-  # Read using data.table, selecting only necessary columns
+  # Only select columns that actually exist in the file. Reading the header
+  # first avoids noisy "Column name '...' not found" warnings for optional
+  # columns the file doesn't have (e.g. a default n/ncase lookup on a file that
+  # uses --*_n_total), and gives a clear error if an ESSENTIAL column is missing.
+  header_cols <- tryCatch(names(data.table::fread(gwas_file, nrows = 0)),
+                          error = function(e) stop(sprintf("Could not read header of %s: %s", basename(gwas_file), e$message), call. = FALSE))
+  requested <- unname(unlist(col_map))
+  essential_file_cols <- unname(unlist(col_map[essential_std_names]))
+  ess_missing <- setdiff(essential_file_cols, header_cols)
+  if (length(ess_missing) > 0) {
+    stop(sprintf("Essential column(s) not found in %s: %s. Check the %s column-name mappings (snp/beta/se/ea/nea/p).",
+                 basename(gwas_file), paste(ess_missing, collapse = ", "), type), call. = FALSE)
+  }
+  opt_missing <- setdiff(setdiff(requested, header_cols), essential_file_cols)
+  if (length(opt_missing) > 0) {
+    message(sprintf("Optional column(s) not in %s, skipped: %s.", basename(gwas_file), paste(opt_missing, collapse = ", ")))
+  }
+  select_cols_file <- intersect(requested, header_cols)
+
+  # Read using data.table, selecting only the columns that exist
   dt <- tryCatch({
-    # Using `select =` is efficient
     data.table::fread(gwas_file, select = select_cols_file, tmpdir = tmp_dir, data.table = TRUE)
   }, error = function(e) {
     stop(sprintf("Error reading GWAS file %s: %s. Check file format and specified column names.", gwas_file, e$message), call. = FALSE)
