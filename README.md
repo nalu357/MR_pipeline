@@ -111,8 +111,15 @@ MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statist
 | `--proxies` | off | Substitute an LD proxy for any instrument missing from the outcome (uses `--ld_ref`). |
 | `--proxy_r2` | `0.8` | Minimum r² for an LD proxy. |
 | `--proxy_kb` | `1000` | Window (kb) to search for LD proxies. |
+| `--proxy_mem` | `30000` | Memory (MB) cap for the PLINK proxy search. |
+| `--steiger` / `--no_steiger` | **on** | Steiger directionality filtering; `--no_steiger` disables it. |
+| `--presso` / `--no_presso` | **on** | MR-PRESSO outlier test; `--no_presso` disables it (much faster on large instrument sets). |
 | `--presso_nbdist` | `1000` | MR-PRESSO simulations; raise (e.g. 10000) for large instrument sets. |
+| `--out_type` | `binary` | `binary` reports odds ratios; `continuous` reports the beta (no OR). |
+| `--f_stat` | `10` | Minimum per-SNP F-statistic. |
 | `--lib_path` | none | Optional custom R library path (no need to edit the script). |
+
+> **Steiger and MR-PRESSO run by default.** Turn them off with `--no_steiger` / `--no_presso` — the latter is the quickest way to cut runtime when you have hundreds of instruments (MR-PRESSO cost scales ~n_snps² × NbDistribution).
 
 **LD proxies:** with `--proxies`, any instrument that is absent from the outcome GWAS is looked up against the LD reference (`--ld_ref`, via PLINK `--r2`); the highest-r² proxy that is present in **both** the exposure and the outcome (r² ≥ `--proxy_r2`, within `--proxy_kb`) replaces it, using the proxy SNP's own effects in both datasets. Substitutions are written to `<prefix>_proxies.tsv` (`instrument`, `proxy`, `r2`). Requires `--ld_ref`; needs the full exposure summary stats (so the proxy has an exposure effect), so it's most useful when the exposure is a full GWAS rather than a pre-selected signal list.
 
