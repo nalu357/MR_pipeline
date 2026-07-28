@@ -662,6 +662,10 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       n_kept <- nrow(steiger_filtered_data); n_removed <- nrow(analysis_dat) - n_kept
       message(sprintf("Steiger filtering: %d of %d SNPs pass the exposure->outcome direction test (removed %d).",
                       n_kept, nrow(analysis_dat), n_removed))
+      if (n_removed > 0.5 * nrow(analysis_dat)) {
+        message(sprintf("WARNING: Steiger removed a large fraction (%d/%d = %.0f%%). This often reflects mis-specified trait variance (e.g. a BINARY trait analysed without case counts + prevalence, so its r^2 is under-estimated) rather than true reverse causation. Interpret 'mr_ivw_steiger' with caution.",
+                        n_removed, nrow(analysis_dat), 100 * n_removed / nrow(analysis_dat)))
+      }
       if (n_kept > 0 && n_removed > 0) {
         steiger_ivw <- tryCatch({
           TwoSampleMR::mr(steiger_filtered_data, method_list = c("mr_ivw"))
