@@ -10,6 +10,7 @@ dependencies:
   - r-base=4.3
   # --- CRAN packages the pipeline uses directly ---
   - r-data.table
+  - r-r.utils        # required by data.table::fread to read .gz files
   - r-dplyr
   - r-optparse
   - r-remotes

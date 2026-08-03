@@ -45,7 +45,8 @@ cran_pins <- c(
   remotes    = "",   # bootstrap installer (used below)
   optparse   = "",
   dplyr      = "",
-  data.table = ""
+  data.table = "",
+  R.utils    = ""    # required by data.table::fread to read .gz files
 )
 # GitHub packages: value is the git ref (SHA or tag), e.g. "0d1e2f3" or "v0.6.3".
 github_pins <- c(
