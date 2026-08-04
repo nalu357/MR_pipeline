@@ -33,7 +33,7 @@ suppressPackageStartupMessages({
 #'
 read_gwas <- function(gwas_file, type = "exposure", col_args,
                       trait_name = NULL, tmp_dir = "./tmp_pipeline",
-                      keep_snps = NULL, pval_thresh = NULL, n_total = NULL) {
+                      keep_snps = NULL, pval_thresh = NULL, n_total = NULL, ncase_total = NULL) {
   
   message(sprintf("----- Reading %s Data -----", toupper(type)))
   message(sprintf("Reading GWAS file: %s", gwas_file))
@@ -194,7 +194,20 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
       message("Per-SNP sample-size column present; ignoring supplied total N.")
     }
   }
-  
+
+  # Constant total case-count fallback (binary traits): if there is no per-SNP
+  # ncase column, assign the supplied total number of cases to every SNP so
+  # Steiger's log-odds r2 (--steiger_logodds) has case counts to work with.
+  if (!is.null(ncase_total)) {
+    if (!"ncase" %in% names(dt)) {
+      dt[, ncase := as.numeric(ncase_total)]
+      message(sprintf("Assigned constant case count Ncase = %s to all SNPs (no per-SNP ncase column found).",
+                      format(ncase_total, scientific = FALSE)))
+    } else {
+      message("Per-SNP ncase column present; ignoring supplied total case count.")
+    }
+  }
+
   if (!is.null(trait_name)) dt[, trait := trait_name]
   message(sprintf("----- Finished Reading %s Data -----", toupper(type)))
   return(dt[])
@@ -549,7 +562,8 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
   proxy_out <- tryCatch(
     read_gwas(outcome_file, type = "outcome", col_args = out_col_args,
               trait_name = if ("trait" %in% names(outcome_raw)) outcome_raw$trait[1] else NULL,
-              tmp_dir = opt$tmp_dir, keep_snps = unique(prox$proxy), n_total = opt$out_n_total),
+              tmp_dir = opt$tmp_dir, keep_snps = unique(prox$proxy),
+              n_total = opt$out_n_total, ncase_total = opt$out_ncase_total),
     error = function(e) NULL)
   if (is.null(proxy_out) || nrow(proxy_out) == 0) {
     message("Proxies: candidate proxies were not found in the outcome; no substitution.")
@@ -609,7 +623,8 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     trait_name = outcome_name,
     tmp_dir = opt$tmp_dir,
     keep_snps = exposure_ivs_dat$SNP,
-    n_total = opt$out_n_total
+    n_total = opt$out_n_total,
+    ncase_total = opt$out_ncase_total
   )
   # Optional: substitute LD proxies for instruments absent from the outcome.
   # Never let a proxy problem abort the MR: on any error, proceed without proxies.

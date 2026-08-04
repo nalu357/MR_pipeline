@@ -69,6 +69,7 @@ option_list <- list(
   make_option("--exp_n", type="character", default="n", help="Exposure: Sample Size column name"),
   make_option("--exp_n_total", type="numeric", default=NULL, help="Exposure: total sample size, applied as a constant N to every SNP when no per-SNP N column exists (enables Steiger)."),
   make_option("--exp_ncase", type="character", default=NULL, help="Exposure: Number of Cases column name. For a BINARY exposure this lets Steiger use the log-odds r2 formula (avoids over-removal)."),
+  make_option("--exp_ncase_total", type="numeric", default=NULL, help="Exposure: total number of cases, applied as a constant to every SNP when no per-SNP ncase column exists (binary Steiger with --steiger_logodds)."),
   make_option("--exp_prevalence", type="numeric", default=NULL, help="Exposure: population prevalence for a binary exposure (used by Steiger's log-odds r2; TwoSampleMR assumes 0.1 if unset)."),
   make_option("--exp_ivs", type="character", default=NULL, help="Path to a file listing pre-defined instrument SNP IDs (one per line or a column named SNP/rsid). Instruments are restricted to this list (no clumping), while --exp_gwas provides full summary stats so proxies can be found."),
   make_option("--exp_ivs_col", type="character", default=NULL, help="Column name holding the SNP IDs in --exp_ivs (default: auto-detect SNP/rsid-like column, else first column)."),
@@ -86,6 +87,7 @@ option_list <- list(
   make_option("--out_n", type="character", default="n", help="Outcome: Sample Size column name"),
   make_option("--out_n_total", type="numeric", default=NULL, help="Outcome: total sample size, applied as a constant N to every SNP when no per-SNP N column exists (needed for Steiger)."),
   make_option("--out_ncase", type="character", default="ncases", help="Outcome: Number of Cases column name"),
+  make_option("--out_ncase_total", type="numeric", default=NULL, help="Outcome: total number of cases, applied as a constant to every SNP when no per-SNP ncase column exists (binary Steiger with --steiger_logodds)."),
   make_option("--out_prevalence", type="numeric", default=NULL, help="Outcome: population prevalence for a binary outcome (used by Steiger's log-odds r2; TwoSampleMR assumes 0.1 if unset)."),
   make_option("--out_type", type="character", default="binary", help="Outcome type ('binary' or 'continuous')"),
   make_option("--out_chr", type="character", default="chr", help="Outcome: Chromosome column name"),
@@ -194,7 +196,8 @@ for (exposure_file in exposure_files) {
     trait_name = exposure_name,
     tmp_dir = opt$tmp_dir,
     pval_thresh = opt$clump_p,
-    n_total = opt$exp_n_total
+    n_total = opt$exp_n_total,
+    ncase_total = opt$exp_ncase_total
   )
   message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
 
