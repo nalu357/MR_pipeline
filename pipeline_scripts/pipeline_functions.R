@@ -149,10 +149,27 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
   # 2. Missing Essential Data: Remove rows with NA in core numeric/ID cols
   essential_std_names_check <- intersect(essential_std_names, names(dt))
   rows_before <- nrow(dt)
+  # Per-column NA counts, so we can name the culprit if rows get dropped (e.g. an
+  # essential column mapped to a column that exists but is empty/NA in the file).
+  na_by_col <- vapply(essential_std_names_check,
+                      function(cc) sum(is.na(dt[[cc]]) | (is.character(dt[[cc]]) & dt[[cc]] == "")),
+                      numeric(1))
   dt <- dt[complete.cases(dt[, ..essential_std_names_check])]
   rows_removed <- rows_before - nrow(dt)
   if (rows_removed > 0) {
-    message(sprintf("Removed %d rows with missing essential data (%s).", rows_removed, paste(essential_std_names_check, collapse=", ")))
+    culprits <- na_by_col[na_by_col > 0]
+    culprit_str <- if (length(culprits)) paste(sprintf("%s(mapped from '%s')=%d NA",
+                       names(culprits), unlist(col_map[names(culprits)]), culprits), collapse = ", ") else "unknown"
+    message(sprintf("Removed %d of %d rows with missing essential data. NA counts by column: %s.",
+                    rows_removed, rows_before, culprit_str))
+    if (nrow(dt) == 0) {
+      fully_na <- names(na_by_col[na_by_col == rows_before])
+      if (length(fully_na)) {
+        stop(sprintf("Essential column(s) %s are entirely empty/NA in %s (mapped from %s). Check the %s p/beta/se column mappings - e.g. an INF vs non-INF p-value column.",
+                     paste(fully_na, collapse = ", "), basename(gwas_file),
+                     paste(sprintf("'%s'", unlist(col_map[fully_na])), collapse = ", "), type), call. = FALSE)
+      }
+    }
   }
   
   # 3. Convert relevant columns to numeric (handle potential non-numeric values)
