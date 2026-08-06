@@ -17,11 +17,18 @@ out_dir  <- "/rfs/project/rfs-mpB3sSsgAn4/Studies/People/Ana/MR_pipeline/output"
 plot_dir <- file.path(out_dir, "plots"); dir.create(plot_dir, showWarnings = FALSE)
 
 # Which harmonised files to plot. "" = all; or narrow it, e.g. "asthma_vs_POI".
-pattern <- ""
+# Which analyses to plot:
+#   pheno_re : phenotypes to include (regex; matches the filename)
+#   mhc_re   : "noMHC" = MHC-excluded runs only; set to "" for all MHC settings
+pheno_re <- "POI_ofh|ANM_ofh"
+mhc_re   <- "noMHC"
 
 files <- list.files(out_dir, pattern = "_harmonized_data\\.rds$", full.names = TRUE)
-if (nzchar(pattern)) files <- files[grepl(pattern, basename(files))]
+files <- files[grepl(pheno_re, basename(files))]
+if (nzchar(mhc_re)) files <- files[grepl(mhc_re, basename(files))]
 stopifnot(length(files) > 0)
+cat(sprintf("Plotting diagnostics for %d analyses:\n  %s\n",
+            length(files), paste(basename(files), collapse = "\n  ")))
 
 diagnostics <- function(rds) {
   stub <- file.path(plot_dir, sub("_harmonized_data\\.rds$", "", basename(rds)))
