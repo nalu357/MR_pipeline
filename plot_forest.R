@@ -22,11 +22,13 @@ if (nzchar(keep)) files <- files[grepl(keep, basename(files))]
 stopifnot(length(files) > 0)
 
 read_one <- function(f) {
-  d <- fread(f); b <- basename(f)
-  d[, config := fifelse(grepl("noMHC", b) & grepl("rigid", b), "strict, no MHC",
-                 fifelse(grepl("rigid", b), "strict, +MHC",
-                 fifelse(grepl("noMHC", b), "lenient, no MHC", "lenient, +MHC")))]
-  d[, file := b]
+  # NB: use `fn` not `b` for the filename - the results table has a column `b`
+  # (beta), which would shadow a local `b` inside the data.table j-expression.
+  d <- fread(f); fn <- basename(f)
+  d[, config := fifelse(grepl("noMHC", fn) & grepl("rigid", fn), "strict, no MHC",
+                 fifelse(grepl("rigid", fn), "strict, +MHC",
+                 fifelse(grepl("noMHC", fn), "lenient, no MHC", "lenient, +MHC")))]
+  d[, file := fn]
   d
 }
 res <- rbindlist(lapply(files, read_one), fill = TRUE)
