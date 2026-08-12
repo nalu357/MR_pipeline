@@ -9,6 +9,50 @@ suppressPackageStartupMessages({
   library(ieugwasr)
 })
 
+# Persistent cache helpers.  Keys include the source path, size and mtime plus
+# every transformation input, so an edited source file or changed CLI mapping
+# naturally misses the old cache.  This deliberately avoids hashing the entire
+# (often multi-GB) source file just to decide whether to reuse a cache.
+cache_token <- function(...) {
+  x <- paste(vapply(list(...), function(z) paste(z, collapse = "\034"), character(1)), collapse = "\035")
+  bytes <- utf8ToInt(enc2utf8(x)); h <- 0
+  for (b in bytes) h <- (h * 31 + b) %% 2147483647
+  sprintf("%08x", as.integer(h))
+}
+
+source_fingerprint <- function(path) {
+  info <- file.info(path)
+  if (is.na(info$size)) stop(sprintf("Input file does not exist or cannot be read: %s", path), call. = FALSE)
+  c(normalizePath(path, mustWork = FALSE), as.character(info$size),
+    format(info$mtime, tz = "UTC", usetz = TRUE))
+}
+
+cache_path <- function(cache_dir, namespace, key) {
+  if (is.null(cache_dir) || !nzchar(cache_dir)) return(NULL)
+  dir <- file.path(cache_dir, namespace)
+  dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+  file.path(dir, paste0(key, ".rds"))
+}
+
+cache_read <- function(path, label) {
+  if (is.null(path) || !file.exists(path)) return(NULL)
+  value <- tryCatch(readRDS(path), error = function(e) NULL)
+  if (!is.null(value)) message(sprintf("Cache hit (%s): %s", label, path))
+  value
+}
+
+cache_write <- function(value, path) {
+  if (is.null(path)) return(invisible(FALSE))
+  tmp <- paste0(path, ".", Sys.getpid(), ".tmp")
+  saveRDS(value, tmp, compress = FALSE)
+  if (!file.rename(tmp, path)) {
+    unlink(tmp)
+    warning(sprintf("Could not write cache file: %s", path), call. = FALSE)
+    return(invisible(FALSE))
+  }
+  invisible(TRUE)
+}
+
 #' Read and Clean GWAS Summary Statistics
 #'
 #' Reads a GWAS file, selects/renames columns to standard names, optionally
@@ -33,7 +77,14 @@ suppressPackageStartupMessages({
 #'
 read_gwas <- function(gwas_file, type = "exposure", col_args,
                       trait_name = NULL, tmp_dir = "./tmp_pipeline",
-                      keep_snps = NULL, pval_thresh = NULL, n_total = NULL, ncase_total = NULL) {
+                      keep_snps = NULL, pval_thresh = NULL, n_total = NULL, ncase_total = NULL,
+                      cache_dir = NULL) {
+
+  gwas_cache_key <- cache_token(source_fingerprint(gwas_file), type, unlist(col_args, use.names = TRUE),
+                                trait_name, sort(unique(keep_snps)), pval_thresh, n_total, ncase_total)
+  gwas_cache_file <- cache_path(cache_dir, "gwas_subsets", gwas_cache_key)
+  cached <- cache_read(gwas_cache_file, "cleaned GWAS subset")
+  if (!is.null(cached)) return(data.table::as.data.table(cached))
   
   message(sprintf("----- Reading %s Data -----", toupper(type)))
   message(sprintf("Reading GWAS file: %s", gwas_file))
@@ -227,7 +278,9 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
 
   if (!is.null(trait_name)) dt[, trait := trait_name]
   message(sprintf("----- Finished Reading %s Data -----", toupper(type)))
-  return(dt[])
+  result <- dt[]
+  cache_write(result, gwas_cache_file)
+  return(result)
 }
 
 #' Format a cleaned GWAS table with TwoSampleMR::format_data
@@ -558,6 +611,12 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
   exposure_ivs_dat <- data.table::as.data.table(exposure_ivs_dat)
   missing <- setdiff(exposure_ivs_dat$SNP, outcome_raw$SNP)
   if (length(missing) == 0) { message("Proxies: all instruments present in outcome; none needed."); return(unchanged) }
+  proxy_cache_key <- cache_token(source_fingerprint(outcome_file), sort(missing),
+                                 exposure_ivs_dat$SNP, exposure_ivs_dat$beta.exposure, exposure_ivs_dat$se.exposure, opt$ld_ref,
+                                 opt$proxy_r2, opt$proxy_kb, opt$f_stat, opt$clump_p)
+  proxy_cache_file <- cache_path(opt$cache_dir, "proxy_substitutions", proxy_cache_key)
+  cached_proxy <- cache_read(proxy_cache_file, "proxy substitution")
+  if (!is.null(cached_proxy)) return(cached_proxy)
   message(sprintf("Proxies: %d instrument(s) missing from outcome; searching LD reference (r2>=%g, %gkb).",
                   length(missing), opt$proxy_r2, opt$proxy_kb))
   if (is.null(exposure_full)) { warning("Proxy search needs the full exposure; skipping.", call. = FALSE); return(unchanged) }
@@ -565,12 +624,12 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
 
   prox <- find_proxies(missing, opt$ld_ref, opt$plink_bin, opt$proxy_r2, opt$proxy_kb, opt$tmp_dir,
                        plink_mem = if (!is.null(opt$proxy_mem)) opt$proxy_mem else 30000)
-  if (nrow(prox) == 0) { message("Proxies: no LD partner (r2>=", opt$proxy_r2, ") found for any missing instrument."); return(unchanged) }
+  if (nrow(prox) == 0) { message("Proxies: no LD partner (r2>=", opt$proxy_r2, ") found for any missing instrument."); cache_write(unchanged, proxy_cache_file); return(unchanged) }
   message(sprintf("Proxies:   LD reference returned %d partner(s), covering %d/%d missing instruments.",
                   nrow(prox), length(unique(prox$query)), length(missing)))
   # Proxy must have an exposure effect and not already be an instrument.
   prox <- prox[proxy %in% exposure_full$SNP & !proxy %in% exposure_ivs_dat$SNP]
-  if (nrow(prox) == 0) { message("Proxies: candidates found but none usable from the exposure."); return(unchanged) }
+  if (nrow(prox) == 0) { message("Proxies: candidates found but none usable from the exposure."); cache_write(unchanged, proxy_cache_file); return(unchanged) }
   message(sprintf("Proxies:   %d partner(s) present in the exposure (covering %d/%d missing).",
                   nrow(prox), length(unique(prox$query)), length(missing)))
   # Proxy must be present in the outcome (read outcome records for candidates).
@@ -580,22 +639,47 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
     read_gwas(outcome_file, type = "outcome", col_args = out_col_args,
               trait_name = if ("trait" %in% names(outcome_raw)) outcome_raw$trait[1] else NULL,
               tmp_dir = opt$tmp_dir, keep_snps = unique(prox$proxy),
-              n_total = opt$out_n_total, ncase_total = opt$out_ncase_total),
+              n_total = opt$out_n_total, ncase_total = opt$out_ncase_total,
+              cache_dir = opt$cache_dir),
     error = function(e) NULL)
   if (is.null(proxy_out) || nrow(proxy_out) == 0) {
     message("Proxies: candidate proxies were not found in the outcome; no substitution.")
+    cache_write(unchanged, proxy_cache_file)
     return(unchanged)
   }
   prox <- prox[proxy %in% proxy_out$SNP]
-  if (nrow(prox) == 0) { message("Proxies: candidates found but none present in the outcome."); return(unchanged) }
+  if (nrow(prox) == 0) { message("Proxies: candidates found but none present in the outcome."); cache_write(unchanged, proxy_cache_file); return(unchanged) }
   message(sprintf("Proxies:   %d partner(s) present in BOTH exposure and outcome (covering %d/%d missing).",
                   nrow(prox), length(unique(prox$query)), length(missing)))
-  # One proxy per missing instrument (highest r2).
+  # A replacement SNP is an instrument in its own right: it must pass the
+  # same minimum F-statistic as the original IVs.  `exposure_full` is already
+  # p-value filtered at --clump_p, so this retains the required strong
+  # exposure association (p < 5e-8 by default) as well as checking strength
+  # explicitly.  Filter before choosing the highest-r2 partner so a weak top
+  # partner does not prevent use of a lower-r2, valid proxy.
+  proxy_exp_raw <- exposure_full[SNP %in% prox$proxy]
+  proxy_exp_raw[, proxy_f_stat := (beta ^ 2) / (se ^ 2)]
+  valid_proxy_ids <- proxy_exp_raw[is.finite(proxy_f_stat) & proxy_f_stat >= opt$f_stat,
+                                   unique(SNP)]
+  n_before_f <- nrow(prox)
+  prox <- prox[proxy %in% valid_proxy_ids]
+  if (nrow(prox) == 0) {
+    message(sprintf("Proxies: none of the candidates passed the proxy F-statistic threshold (F >= %g); no substitution.",
+                    opt$f_stat))
+    cache_write(unchanged, proxy_cache_file)
+    return(unchanged)
+  }
+  if (nrow(prox) < n_before_f) {
+    message(sprintf("Proxies: removed %d candidate partner(s) with proxy F-statistic < %g.",
+                    n_before_f - nrow(prox), opt$f_stat))
+  }
+
+  # One eligible proxy per missing instrument (highest r2).
   prox <- prox[order(query, -r2)][, .SD[1], by = query]
 
   # Format proxy exposure records and force the exposure id to match the set.
   proxy_exp_fmt <- data.table::as.data.table(
-    format_gwas(exposure_full[SNP %in% prox$proxy], type = "exposure",
+    format_gwas(proxy_exp_raw[SNP %in% prox$proxy], type = "exposure",
                 trait_name = exposure_ivs_dat$exposure[1]))
   proxy_exp_fmt[, `:=`(exposure = exposure_ivs_dat$exposure[1],
                        id.exposure = exposure_ivs_dat$id.exposure[1])]
@@ -605,8 +689,10 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
   n_sub <- nrow(prox); n_missing <- length(missing)
   message(sprintf("Proxies: SUBSTITUTED %d of %d missing instrument(s); %d could not be rescued (no proxy in both datasets). Mapping -> <prefix>_proxies.tsv",
                   n_sub, n_missing, n_missing - n_sub))
-  list(exposure = exposure_new, outcome_raw = outcome_raw_new,
-       map = prox[, .(instrument = query, proxy, r2)])
+  result <- list(exposure = exposure_new, outcome_raw = outcome_raw_new,
+                 map = prox[, .(instrument = query, proxy, r2)])
+  cache_write(result, proxy_cache_file)
+  result
 }
 
 #' Run Mendelian Randomization Analysis for an Exposure-Outcome Pair
@@ -626,6 +712,12 @@ apply_proxies <- function(exposure_ivs_dat, outcome_raw, exposure_full, outcome_
 run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_col_args, out_prefix, opt,
                             exposure_full = NULL) {
   message(sprintf("Processing outcome: %s", outcome_file))
+  runtime_start <- Sys.time()
+  runtime <- data.table::data.table(stage = character(), seconds = numeric())
+  mark_runtime <- function(stage) {
+    runtime <<- rbind(runtime, data.table::data.table(stage = stage,
+      seconds = as.numeric(difftime(Sys.time(), runtime_start, units = "secs"))))
+  }
   # exp(beta) is an odds ratio only for a binary (log-odds) outcome. For a
   # continuous outcome we report the beta and its CI (lo_ci/up_ci) and omit the
   # meaningless OR columns. Controlled by --out_type (default "binary").
@@ -641,8 +733,10 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     tmp_dir = opt$tmp_dir,
     keep_snps = exposure_ivs_dat$SNP,
     n_total = opt$out_n_total,
-    ncase_total = opt$out_ncase_total
+    ncase_total = opt$out_ncase_total,
+    cache_dir = opt$cache_dir
   )
+  mark_runtime("outcome_read")
   # Optional: substitute LD proxies for instruments absent from the outcome.
   # Never let a proxy problem abort the MR: on any error, proceed without proxies.
   if (isTRUE(opt$proxies)) {
@@ -657,21 +751,41 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       }
     }
   }
+  mark_runtime("proxy_substitution")
   outcome_dat <- format_gwas(outcome_raw, type = "outcome", trait_name = outcome_name)
   if (!inherits(outcome_dat, "data.frame") || nrow(outcome_dat) == 0) {
     warning(sprintf("No overlapping IVs found in outcome %s. Skipping.", outcome_file))
     return(NULL)
   }
-  harmonized_dat <- tryCatch({
-    TwoSampleMR::harmonise_data(
-      exposure_dat = exposure_ivs_dat,
-      outcome_dat = outcome_dat,
-      action = 2
-    )
-  }, error = function(e) {
-    warning(sprintf("Error during harmonization for %s: %s", outcome_file, e$message), call. = FALSE)
-    NULL
-  })
+  harmonized_cache_key <- cache_token(source_fingerprint(outcome_file), outcome_name,
+                                      exposure_ivs_dat$SNP, exposure_ivs_dat$beta.exposure,
+                                      exposure_ivs_dat$se.exposure, exposure_ivs_dat$effect_allele.exposure,
+                                      exposure_ivs_dat$other_allele.exposure, opt$out_snp, opt$out_beta,
+                                      opt$out_se, opt$out_ea, opt$out_nea)
+  harmonized_cache_file <- cache_path(opt$cache_dir, "harmonized", harmonized_cache_key)
+  harmonized_dat <- cache_read(harmonized_cache_file, "harmonized data")
+  if (is.null(harmonized_dat)) {
+    harmonized_dat <- tryCatch({
+      TwoSampleMR::harmonise_data(
+        exposure_dat = exposure_ivs_dat,
+        outcome_dat = outcome_dat,
+        action = 2
+      )
+    }, error = function(e) {
+      warning(sprintf("Error during harmonization for %s: %s", outcome_file, e$message), call. = FALSE)
+      NULL
+    })
+    if (!is.null(harmonized_dat)) cache_write(harmonized_dat, harmonized_cache_file)
+  }
+  # TwoSampleMR versions differ in whether non-standard exposure columns
+  # survive harmonisation.  Restore the MHC flag by SNP when necessary so the
+  # downstream no-MHC branch remains deterministic (including on old caches).
+  if (!is.null(harmonized_dat) && "mhc" %in% names(exposure_ivs_dat) &&
+      !any(c("mhc", "mhc.exposure") %in% names(harmonized_dat)) && "SNP" %in% names(harmonized_dat)) {
+    harmonized_dat$mhc.exposure <- exposure_ivs_dat$mhc[
+      match(harmonized_dat$SNP, exposure_ivs_dat$SNP)]
+  }
+  mark_runtime("harmonisation")
   if (is.null(harmonized_dat) || nrow(harmonized_dat) == 0) {
     warning(sprintf("Harmonization failed or removed all SNPs for %s. Skipping.", outcome_file))
     return(NULL)
@@ -686,6 +800,18 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     harmonized_dat[harmonized_dat$mr_keep == TRUE, , drop = FALSE]
   } else {
     harmonized_dat
+  }
+  if (isTRUE(opt$analysis_exclude_mhc)) {
+    mhc_col <- intersect(c("mhc", "mhc.exposure"), names(analysis_dat))[1]
+    if (is.na(mhc_col)) {
+      warning("--analysis_exclude_mhc requested but no MHC flag was retained after harmonisation; analysing all SNPs.", call. = FALSE)
+    } else {
+      before_mhc <- nrow(analysis_dat)
+      is_mhc <- as.logical(analysis_dat[[mhc_col]])
+      analysis_dat <- analysis_dat[is.na(is_mhc) | !is_mhc, , drop = FALSE]
+      message(sprintf("MHC sensitivity: removed %d harmonised instrument(s) using '%s'.",
+                      before_mhc - nrow(analysis_dat), mhc_col))
+    }
   }
   if (nrow(analysis_dat) == 0) {
     warning(sprintf("No usable SNPs after harmonisation (all mr_keep==FALSE) for %s. Skipping.", outcome_file))
@@ -708,6 +834,7 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     NULL
   })
   if (is.null(mr_results)) return(NULL)
+  mark_runtime("core_mr")
   mr_results <- TwoSampleMR::generate_odds_ratios(mr_results)
   mr_results_dt <- data.table::as.data.table(mr_results)
   if (!outcome_is_binary) mr_results_dt[, c("or", "or_lci95", "or_uci95") := NULL]
@@ -798,7 +925,11 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
     }
   }
   
-  if (opt$presso && n_snps >= 4 && requireNamespace("MRPRESSO", quietly = TRUE)) {
+  # MR-PRESSO is costly, so for broad GWAS-by-GWAS screening only run it as a
+  # follow-up to a nominally significant IVW result.
+  ivw_pval <- mr_results_dt[method == "Inverse variance weighted", pval]
+  ivw_significant <- length(ivw_pval) > 0 && any(is.finite(ivw_pval) & ivw_pval < 0.05)
+  if (opt$presso && n_snps >= 4 && requireNamespace("MRPRESSO", quietly = TRUE) && ivw_significant) {
     nbdist <- if (!is.null(opt$presso_nbdist)) opt$presso_nbdist else 1000
     message(sprintf("Running MR-PRESSO on %d SNPs (NbDistribution=%d)... cost scales ~n_snps^2 x NbDistribution, so this can be slow for large/high settings (use --clump_r2 0.001 for fewer, independent instruments, or --no_presso to skip).",
                     n_snps, nbdist))
@@ -836,13 +967,19 @@ run_mr_analysis <- function(exposure_ivs_dat, outcome_file, outcome_name, out_co
       if (!is.null(presso_results$`MR-PRESSO results`$`Global Test`$Pvalue)) { presso_main[, presso_global_pval := presso_results$`MR-PRESSO results`$`Global Test`$Pvalue]; cols_to_keep <- c(cols_to_keep, "presso_global_pval") }
       mr_results_dt <- rbind(mr_results_dt, presso_main[, ..cols_to_keep], fill = TRUE)
     }
+  } else if (opt$presso && n_snps >= 4 && requireNamespace("MRPRESSO", quietly = TRUE)) {
+    ivw_label <- if (length(ivw_pval) == 0) "not available" else format(ivw_pval[1], digits = 4)
+    message(sprintf("MR-PRESSO skipped: IVW p-value is %s (requires p < 0.05).", ivw_label))
   }
+  mark_runtime("sensitivity_and_presso")
   
   harmonized_file <- paste0(out_prefix, "_harmonized_data.rds")
   saveRDS(harmonized_dat, file = harmonized_file)
   
   results_file <- paste0(out_prefix, "_full_mr_results.csv")
   data.table::fwrite(mr_results_dt, results_file, sep = ",", na = "NA")
+  runtime[, total_seconds := seconds]
+  data.table::fwrite(runtime, paste0(out_prefix, "_runtime.tsv"), sep = "\t")
   message(sprintf("Saved results to: %s", results_file))
   return(mr_results_dt)
 }
@@ -985,4 +1122,3 @@ process_mr_results <- function(all_mr_results, opt) {
   
   return(all_mr_results.all)
 }
-

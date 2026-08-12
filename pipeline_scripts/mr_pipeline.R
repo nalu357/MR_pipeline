@@ -105,6 +105,8 @@ option_list <- list(
               help="MHC region as CHR:START-END used to flag instruments [default: %default, GRCh37 extended MHC]. Set to match your GWAS build."),
   make_option("--exclude_mhc", action="store_true", default=FALSE,
               help="Drop instruments in --mhc_region instead of just flagging them [default: keep and flag]."),
+  make_option("--analysis_exclude_mhc", action="store_true", default=FALSE,
+              help="Run the no-MHC sensitivity analysis after harmonisation, allowing cached inputs to be reused."),
   # Proxy search for instruments missing from the outcome (local LD reference)
   make_option("--proxies", action="store_true", default=FALSE,
               help="For instruments absent from the outcome, search the LD reference (--ld_ref) for a proxy present in both exposure and outcome, and substitute it."),
@@ -117,15 +119,18 @@ option_list <- list(
               help="MR-PRESSO number of simulations (NbDistribution). Increase (e.g. 10000) for large instrument sets to stabilise the outlier test [default: %default]."),
   # Output options
   make_option("--tmp_dir", type="character", default="./tmp_pipeline", help="Temporary directory for intermediate files"),
+  make_option("--cache_dir", type="character", default="./mr_cache", help="Directory for reusable cleaned-GWAS, proxy, and harmonisation caches [default: %default]."),
+  make_option("--no_cache", action="store_true", default=FALSE, help="Disable reusable on-disk caches."),
   # Sensitivity analysis options
   make_option("--steiger", type="logical", action="store_true", default=TRUE, help="Run Steiger filtering"),
   make_option("--no_steiger", action="store_false", dest="steiger"),
   make_option("--steiger_logodds", action="store_true", default=FALSE, help="Use the log-odds r2 (get_r_from_lor) for binary traits in Steiger. Only self-consistent when BOTH traits are binary; for mixed binary/continuous it can swing Steiger to remove ~all or ~none - leave off unless both traits are binary."),
-  make_option("--presso", type="logical", action="store_true", default=TRUE, help="Run MR-PRESSO outlier test"),
+  make_option("--presso", type="logical", action="store_true", default=TRUE, help="Run MR-PRESSO outlier test only when IVW p-value is <0.05"),
   make_option("--no_presso", action="store_false", dest="presso")
 )
 parser <- OptionParser(option_list=option_list)
 opt <- parse_args(parser)
+if (isTRUE(opt$no_cache)) opt$cache_dir <- NULL
 
 # Source helper functions relative to this script's own location first, so the
 # pipeline works regardless of the current working directory.
@@ -197,7 +202,8 @@ for (exposure_file in exposure_files) {
     tmp_dir = opt$tmp_dir,
     pval_thresh = opt$clump_p,
     n_total = opt$exp_n_total,
-    ncase_total = opt$exp_ncase_total
+    ncase_total = opt$exp_ncase_total,
+    cache_dir = opt$cache_dir
   )
   message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
 
@@ -272,4 +278,3 @@ all_mr_dt <- data.table::rbindlist(all_mr_results, fill = TRUE)
 process_mr_results(all_mr_dt, opt)
 
 message("All analyses complete.")
-

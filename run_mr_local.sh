@@ -82,13 +82,13 @@ Rscript "${SCRIPT}" --exp_gwas "${ASTHMA}" --exp_name asthma "${ASTHMA_EXP[@]}" 
 Rscript "${SCRIPT}" --exp_gwas "${ANM}" --exp_name ANM_ofh_meta "${ANM_EXP[@]}" \
   --exp_ivs "${ANM_IVS}" \
   --out_gwas "${ASTHMA}" --out_name asthma "${ASTHMA_OUT[@]}" \
-  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_" "${PROXY[@]}" --presso_nbdist 5000 --exclude_mhc \
+  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_" "${PROXY[@]}" --presso_nbdist 5000 --analysis_exclude_mhc \
   || echo "WARNING: [lenient-noMHC] ANM->asthma failed; continuing."
 
 # Asthma --> ANM
 Rscript "${SCRIPT}" --exp_gwas "${ASTHMA}" --exp_name asthma "${ASTHMA_EXP[@]}" \
   --out_gwas "${ANM}" --out_name ANM_ofh_meta "${ANM_OUT[@]}" \
-  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_" --clump_r2 0.2 --clump_kb 10000 "${PROXY[@]}" --presso_nbdist 10000 --exclude_mhc \
+  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_" --clump_r2 0.2 --clump_kb 10000 "${PROXY[@]}" --presso_nbdist 10000 --analysis_exclude_mhc \
   || echo "WARNING: [lenient-noMHC] asthma->ANM failed; continuing."
 
 ################################################################################
@@ -97,13 +97,13 @@ Rscript "${SCRIPT}" --exp_gwas "${ASTHMA}" --exp_name asthma "${ASTHMA_EXP[@]}" 
 # ANM --> asthma
 Rscript "${SCRIPT}" --exp_gwas "${ANM}" --exp_name ANM_ofh_meta "${ANM_EXP[@]}" \
   --out_gwas "${ASTHMA}" --out_name asthma "${ASTHMA_OUT[@]}" \
-  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_rigid_" --clump_r2 0.001 --clump_kb 10000 "${PROXY[@]}" --presso_nbdist 5000 --exclude_mhc \
+  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_rigid_" --clump_r2 0.001 --clump_kb 10000 "${PROXY[@]}" --presso_nbdist 5000 --analysis_exclude_mhc \
   || echo "WARNING: [strict-noMHC] ANM->asthma failed; continuing."
 
 # Asthma --> ANM
 Rscript "${SCRIPT}" --exp_gwas "${ASTHMA}" --exp_name asthma "${ASTHMA_EXP[@]}" \
   --out_gwas "${ANM}" --out_name ANM_ofh_meta "${ANM_OUT[@]}" \
-  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_rigid_" --clump_r2 0.001 --clump_kb 10000 "${PROXY[@]}" --presso_nbdist 10000 --exclude_mhc \
+  --ld_ref "${LDREF}" --out_prefix "${OUT}noMHC_rigid_" --clump_r2 0.001 --clump_kb 10000 "${PROXY[@]}" --presso_nbdist 10000 --analysis_exclude_mhc \
   || echo "WARNING: [strict-noMHC] asthma->ANM failed; continuing."
 
 echo "All MR runs complete."

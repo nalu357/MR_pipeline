@@ -108,21 +108,30 @@ MR methods (IVW, weighted median, MR-Egger) assume the instruments are **statist
 | `--exp_ncase_total` / `--out_ncase_total` | none | Total number of cases as a **constant** (when the file has no per-SNP ncase column), analogous to `--*_n_total`. |
 | `--exp_prevalence` / `--out_prevalence` | none | Population prevalence for a binary trait's Steiger r² (TwoSampleMR assumes 0.1 if unset). |
 | `--mhc_region` | `6:25000000-34000000` | MHC region (CHR:START-END) to flag; set to your build. |
-| `--exclude_mhc` | off | Drop MHC instruments instead of flagging them. |
+| `--exclude_mhc` | off | Drop MHC instruments before harmonisation. |
+| `--analysis_exclude_mhc` | off | Drop flagged MHC SNPs after harmonisation; use for the no-MHC branch with the same inputs to reuse caches. |
 | `--proxies` | off | Substitute an LD proxy for any instrument missing from the outcome (uses `--ld_ref`). |
 | `--proxy_r2` | `0.8` | Minimum r² for an LD proxy. |
 | `--proxy_kb` | `1000` | Window (kb) to search for LD proxies. |
 | `--proxy_mem` | `30000` | Memory (MB) cap for the PLINK proxy search. |
 | `--steiger` / `--no_steiger` | **on** | Steiger directionality filtering; `--no_steiger` disables it. |
-| `--presso` / `--no_presso` | **on** | MR-PRESSO outlier test; `--no_presso` disables it (much faster on large instrument sets). |
+| `--presso` / `--no_presso` | **on** | MR-PRESSO outlier test, run only when the main IVW p-value is <0.05; `--no_presso` disables it. |
 | `--presso_nbdist` | `1000` | MR-PRESSO simulations; raise (e.g. 10000) for large instrument sets. |
 | `--out_type` | `binary` | `binary` reports odds ratios; `continuous` reports the beta (no OR). |
 | `--f_stat` | `10` | Minimum per-SNP F-statistic. |
 | `--lib_path` | none | Optional custom R library path (no need to edit the script). |
 
-> **Steiger and MR-PRESSO run by default.** Turn them off with `--no_steiger` / `--no_presso` — the latter is the quickest way to cut runtime when you have hundreds of instruments (MR-PRESSO cost scales ~n_snps² × NbDistribution).
+> **Steiger runs by default. MR-PRESSO is enabled by default but only runs for pairs with IVW p<0.05.** Turn them off with `--no_steiger` / `--no_presso`; MR-PRESSO cost scales ~n_snps² × NbDistribution.
 
-**LD proxies:** with `--proxies`, any instrument that is absent from the outcome GWAS is looked up against the LD reference (`--ld_ref`, via PLINK `--r2`); the highest-r² proxy that is present in **both** the exposure and the outcome (r² ≥ `--proxy_r2`, within `--proxy_kb`) replaces it, using the proxy SNP's own effects in both datasets. Substitutions are written to `<prefix>_proxies.tsv` (`instrument`, `proxy`, `r2`). Requires `--ld_ref`; needs the full exposure summary stats (so the proxy has an exposure effect), so it's most useful when the exposure is a full GWAS rather than a pre-selected signal list.
+**LD proxies:** with `--proxies`, any instrument that is absent from the outcome GWAS is looked up against the LD reference (`--ld_ref`, via PLINK `--r2`); the highest-r² proxy that is present in **both** the exposure and the outcome (r² ≥ `--proxy_r2`, within `--proxy_kb`) replaces it, using the proxy SNP's own effects in both datasets. A proxy must also meet the exposure association threshold (`--clump_p`, 5e-8 by default) and the F-statistic threshold (`--f_stat`, 10 by default). Substitutions are written to `<prefix>_proxies.tsv` (`instrument`, `proxy`, `r2`). Requires `--ld_ref`; needs the full exposure summary stats (so the proxy has an exposure effect), so it's most useful when the exposure is a full GWAS rather than a pre-selected signal list.
+
+## Performance for GWAS-by-GWAS screens
+
+The pipeline caches cleaned, SNP-subsetted GWAS tables, LD-proxy substitutions, and harmonised data in `./mr_cache` by default. Cache keys include the input file path, size, modification time, column mappings, selected SNPs, and relevant thresholds, so a changed input automatically invalidates its old cache. Put `--cache_dir` on fast shared cluster storage when using multiple jobs; use `--no_cache` for a one-off clean run. Each pair also writes `<prefix>_runtime.tsv`, giving cumulative stage timings for profiling.
+
+For an MHC sensitivity analysis, run the MHC-included configuration first, then repeat the same command and replace the MHC setting with `--analysis_exclude_mhc` (and change `--out_prefix`). This excludes MHC after harmonisation, allowing the cleaned GWAS and harmonised cache entries to be reused. The supplied local and Slurm grid launchers use this mode for their no-MHC configurations.
+
+Independent pairs/configurations can be parallelised as a Slurm job array with [run_mr_slurm_array.sh](run_mr_slurm_array.sh). Create a trusted manifest containing one fully quoted `Rscript pipeline_scripts/mr_pipeline.R ... --cache_dir /shared/mr_cache` command per line, then submit `sbatch --array=1-N%K run_mr_slurm_array.sh manifest.txt`, choosing `K` for the available memory and reference-panel I/O capacity.
 
 ## Output Files
 

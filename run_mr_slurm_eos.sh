@@ -85,8 +85,8 @@ grid_clump() {   # $1 exp_gwas $2 exp_name $3 EXP_ARR(name) $4 out_gwas $5 out_n
   eval "local EXPA=(\"\${$ea[@]}\")"; eval "local OUTA=(\"\${$oa[@]}\")"
   local specs=( "|--clump_r2 0.2 --clump_kb 10000|"
                 "rigid_|--clump_r2 0.001 --clump_kb 10000|"
-                "noMHC_|--clump_r2 0.2 --clump_kb 10000|--exclude_mhc"
-                "noMHC_rigid_|--clump_r2 0.001 --clump_kb 10000|--exclude_mhc" )
+                "noMHC_|--clump_r2 0.2 --clump_kb 10000|--analysis_exclude_mhc"
+                "noMHC_rigid_|--clump_r2 0.001 --clump_kb 10000|--analysis_exclude_mhc" )
   for s in "${specs[@]}"; do IFS='|' read -r pref sel mhc <<< "$s"
     run "${tag} [${pref:-lenient+MHC}]" \
       --exp_gwas "$eg" --exp_name "$en" "${EXPA[@]}" \
@@ -102,8 +102,8 @@ grid_ivs() {     # $1 exp_gwas $2 exp_name $3 EXP_ARR(name) $4 ivs_file $5 out_g
   eval "local EXPA=(\"\${$ea[@]}\")"; eval "local OUTA=(\"\${$oa[@]}\")"
   local specs=( "|--exp_ivs ${ivs}|"
                 "rigid_|--clump_r2 0.001 --clump_kb 10000|"
-                "noMHC_|--exp_ivs ${ivs}|--exclude_mhc"
-                "noMHC_rigid_|--clump_r2 0.001 --clump_kb 10000|--exclude_mhc" )
+                "noMHC_|--exp_ivs ${ivs}|--analysis_exclude_mhc"
+                "noMHC_rigid_|--clump_r2 0.001 --clump_kb 10000|--analysis_exclude_mhc" )
   for s in "${specs[@]}"; do IFS='|' read -r pref sel mhc <<< "$s"
     run "${tag} [${pref:-lenient+MHC}]" \
       --exp_gwas "$eg" --exp_name "$en" "${EXPA[@]}" \
