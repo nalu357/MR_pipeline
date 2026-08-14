@@ -121,6 +121,7 @@ option_list <- list(
   make_option("--tmp_dir", type="character", default="./tmp_pipeline", help="Temporary directory for intermediate files"),
   make_option("--cache_dir", type="character", default="./mr_cache", help="Directory for reusable cleaned-GWAS, proxy, and harmonisation caches [default: %default]."),
   make_option("--no_cache", action="store_true", default=FALSE, help="Disable reusable on-disk caches."),
+  make_option("--cache_max_gb", type="numeric", default=20, help="Cap the on-disk cache at this many GB (least-recently-used files evicted at start-up); 0 = unlimited [default: %default]."),
   # Sensitivity analysis options
   make_option("--steiger", type="logical", action="store_true", default=TRUE, help="Run Steiger filtering"),
   make_option("--no_steiger", action="store_false", dest="steiger"),
@@ -145,6 +146,9 @@ if (is.na(functions_file)) {
                paste(functions_candidates, collapse=", ")), call.=FALSE)
 }
 source(functions_file)
+
+# Bound the reusable cache before doing any work (never evicts this run's data).
+prune_cache(opt$cache_dir, opt$cache_max_gb)
 
 if (!is.null(opt$presso) && opt$presso) {
   if (!requireNamespace("MRPRESSO", quietly = TRUE)) {
@@ -191,54 +195,18 @@ for (exposure_file in exposure_files) {
     iv_list <- read_iv_list(opt$exp_ivs, col = opt$exp_ivs_col)
     message(sprintf("Loaded %d pre-defined instrument IDs from %s.", length(iv_list), opt$exp_ivs))
   }
-  # Read + clean the exposure (cheap; pre-filtered by p-value so format_data
-  # later runs only on the selected instruments). Full summary stats are the
-  # assumed input; --skip_clump handles pre-independent signal lists.
-  exposure_raw <- read_gwas(
-    gwas_file = exposure_file,
-    type = "exposure",
-    col_args = exp_col_args,
-    trait_name = exposure_name,
-    tmp_dir = opt$tmp_dir,
-    pval_thresh = opt$clump_p,
-    n_total = opt$exp_n_total,
-    ncase_total = opt$exp_ncase_total,
-    cache_dir = opt$cache_dir
-  )
-  message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
-
-  # All instrument selection (p-filter -> clump/skip -> format -> F-stat -> MHC)
-  # lives in select_instruments().
-  exposure_ivs_dat <- select_instruments(
-    exposure_raw = exposure_raw,
-    trait_name = exposure_name,
-    clump_p = opt$clump_p,
-    clump_kb = opt$clump_kb,
-    clump_r2 = opt$clump_r2,
-    ld_ref = opt$ld_ref,
-    plink_bin = opt$plink_bin,
-    min_f_stat = opt$f_stat,
-    skip_clump = opt$skip_clump,
-    iv_list = iv_list,
-    mhc_region = opt$mhc_region,
-    exclude_mhc = opt$exclude_mhc
-  )
-  if (!inherits(exposure_ivs_dat, "data.frame") || nrow(exposure_ivs_dat) == 0) {
+  # Read + clean the exposure and select instruments once (shared with mr_grid.R).
+  # Full summary stats are the assumed input; --skip_clump / --exp_ivs handle
+  # pre-independent signal lists.
+  prep <- prepare_exposure_instruments(
+    exposure_file = exposure_file, exposure_name = exposure_name,
+    exp_col_args = exp_col_args, opt = opt, iv_list = iv_list)
+  if (is.null(prep)) {
     stop("No exposure instruments (IVs) remained after clumping and filtering. Exiting.", call. = FALSE)
   }
-  exposure_ivs <- exposure_ivs_dat$SNP
-  message(sprintf("Final selected IVs count: %d", length(exposure_ivs)))
-  # Write a fuller instrument table (not just SNP IDs) for transparency/reporting.
-  iv_cols <- intersect(
-    c("SNP", "chr.exposure", "pos.exposure", "effect_allele.exposure", "other_allele.exposure",
-      "eaf.exposure", "beta.exposure", "se.exposure", "pval.exposure", "samplesize.exposure",
-      "F_statistic", "mhc"),
-    names(exposure_ivs_dat))
-  data.table::fwrite(
-    data.table::as.data.table(exposure_ivs_dat)[, ..iv_cols],
-    paste0(opt$out_prefix, exposure_name, "_exposure_ivs.tsv"),
-    sep = "\t", na = "NA")
-  
+  exposure_raw     <- prep$raw
+  exposure_ivs_dat <- prep$ivs_dat
+
   if (!is.null(opt$outcome_dir)) {
     outcome_files <- list.files(
       opt$outcome_dir,

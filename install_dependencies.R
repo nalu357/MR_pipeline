@@ -46,7 +46,8 @@ cran_pins <- c(
   optparse   = "",
   dplyr      = "",
   data.table = "",
-  R.utils    = ""    # required by data.table::fread to read .gz files
+  R.utils    = "",   # required by data.table::fread to read .gz files
+  digest     = ""    # strong (xxhash64) cache keys; pipeline falls back if absent
 )
 # GitHub packages: value is the git ref (SHA or tag), e.g. "0d1e2f3" or "v0.6.3".
 github_pins <- c(

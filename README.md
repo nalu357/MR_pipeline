@@ -207,6 +207,80 @@ This ensures that the column mapping arguments (`--exp_*` and `--out_*`) work co
 
 If your files have different header names, please standardize them or adjust the column mapping arguments accordingly before running the pipeline.
 
+## Trait info files (manifests) — `mr_grid.R`
+
+`mr_pipeline.R` runs **one exposure against one outcome**, with every column name,
+sample size and build passed as `--exp_*` / `--out_*` flags — so a batch requires all
+files to share headers (see the note above). `mr_grid.R` removes that constraint: you
+describe each trait **once** in an **info file** (a CSV manifest), and the driver runs the
+whole exposure × outcome grid — both directions and, optionally, the 4-config sensitivity
+grid — reading every column/N/type/build/instrument detail per trait from the manifest.
+Traits can have completely different headers.
+
+### Manifest columns
+
+One row per trait. Header names are case-insensitive and `.`/space/`_` are interchangeable
+(so `chr.col`, `Chr Col`, `chr_col` all match). Required columns are marked ✔.
+
+| Column | Meaning |
+|---|---|
+| `Short name` ✔ | Trait ID — used in result labels and output filenames, and as the key for `--exposures`/`--outcomes`. |
+| `file.name` ✔ | GWAS summary-stats file. Absolute path used as-is; otherwise resolved against `--data_dir`. |
+| `snp.col`,`ea.col`,`nea.col`,`beta.col`,`se.col`,`pval.col` ✔ | Column names in that GWAS. |
+| `chr.col`,`pos.col`,`eaf.col` | Optional columns; leave blank if absent (EAF-less traits are handled). |
+| `N` | Total sample size → constant per-SNP N (enables Steiger). |
+| `Ncases` | Number of cases. **Populated ⇒ the trait is treated as BINARY** (odds ratios, case-aware Steiger); **blank ⇒ CONTINUOUS** (beta). |
+| `Population prevalence` | Used by Steiger's log-odds r² for binary traits (with `--steiger_logodds`). |
+| `Genome build` | `b37`/`b38` — selects the MHC region used to flag/exclude that trait's instruments when it is the exposure. |
+| `ivs.file` | Path to the trait's **pre-defined instrument list** (independent signals from the original publication). Drives the *lenient* config (see below). Blank ⇒ the lenient config clumps at r²=0.2 instead. |
+| `Downloaded` | `no` (or a blank `file.name`) ⇒ the row is **skipped** with a warning. |
+
+Numbers may contain thousands separators (`"408,112"` is fine).
+
+### How the grid runs
+
+- **Selection.** `--exp_info a.csv[,b.csv]` defines the exposure pool, `--out_info c.csv`
+  the outcome pool (the same file may serve both). By default **all** traits are used;
+  `--exposures name1,name2` / `--outcomes name1,name2` restrict to a subset of Short names.
+- **Directions.** `--bidirectional` also runs each outcome-as-exposure.
+- **Sensitivity grid.** `--sensitivity_grid` runs 4 configs per pair, distinguished by
+  instrument selection and MHC, with output-filename prefixes matching the rest of the
+  pipeline (so `plot_forest.R` works unchanged):
+  - `` (lenient) — use the exposure's `ivs.file` (pre-defined signals), keep MHC.
+  - `rigid_` (strict) — re-clump the full sumstats at r²=0.001, keep MHC.
+  - `noMHC_` — lenient + exclude MHC at analysis.
+  - `noMHC_rigid_` — strict + exclude MHC.
+
+  Without `--sensitivity_grid` a single config runs, using `--clump_r2`/`--exclude_mhc`
+  (the exposure's `ivs.file` is still used as instruments when present).
+- Output files are `<out_prefix><config>_<exposure>_vs_<outcome>_full_mr_results.csv`,
+  plus a processed summary `<out_prefix><config>all_processed_mr_results.csv` per config.
+
+### Example
+
+```bash
+Rscript pipeline_scripts/mr_grid.R \
+  --exp_info read_me_autoimmune_traits.csv \
+  --out_info read_me_menopause_traits.csv \
+  --data_dir /path/to/gwas \
+  --ld_ref   /path/to/ld_reference/Phase3_eur \
+  --bidirectional --sensitivity_grid \
+  --out_prefix output/autoimmune/ \
+  --proxies --proxy_r2 0.8 --proxy_kb 1000
+# add --dry_run first to print the resolved traits and the exact grid, then exit
+# add --exposures asthma,EO / --outcomes POI,ANM to restrict the sets
+```
+
+See `run_mr_grid_slurm.sh` for a ready-to-edit SLURM wrapper.
+
+### Limitation
+
+Each manifest row has a single `pval.col`, so a trait that needs a *different* p-value
+column depending on whether it is the exposure or the outcome (e.g. the ANM
+`P_BOLT_LMM` vs `P_BOLT_LMM_INF` case) can't be expressed in one row — keep those on the
+per-trait bash runner (`run_mr_slurm_eos.sh`). Standard full-summary-statistic traits
+(one p-value column) are the target here.
+
 ## Special Case: QTLs as Exposures
 
 If you are using QTLs (e.g., eQTLs, pQTLs, mQTLs) as exposures, you can provide a directory of QTL summary statistics files (e.g., qtl_exposures/) with one file per molecular trait (for example, one file per gene, protein, or metabolite).

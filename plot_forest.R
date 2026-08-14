@@ -9,12 +9,18 @@
 # ===========================================================================
 suppressPackageStartupMessages({ library(data.table); library(ggplot2) })
 
-out_dir  <- "/rfs/project/rfs-mpB3sSsgAn4/Studies/People/Ana/MR_pipeline/output"  # <-- edit
+out_dir  <- "/rfs/project/rfs-mpB3sSsgAn4/Studies/People/Ana/MR_pipeline/output/eos"  # <-- edit
 plot_dir <- file.path(out_dir, "plots"); dir.create(plot_dir, showWarnings = FALSE)
 
-# Only plot files whose name matches this (drops the stale earlier runs).
-# e.g. "_ofh_meta" keeps only the ANM_ofh_meta / POI_ofh_meta grid.
-keep <- "_ofh_meta"
+# `anchor` is the trait that is common to every pair in this grid (the shared
+# exposure/outcome). One forest is drawn per OTHER trait, so a grid of
+# EO vs {asthma, POI, ANM} anchored on "EO" gives three 2-panel forests.
+# For the old menopause<->asthma grid, set anchor <- "asthma".
+anchor <- "EO"
+
+# Only plot files whose name matches this (drops stale earlier runs). Default
+# keeps every file that mentions the anchor trait.
+keep <- anchor
 
 # ---- Read + tidy -----------------------------------------------------------
 files <- list.files(out_dir, pattern = "_full_mr_results\\.csv$", full.names = TRUE)
@@ -39,10 +45,15 @@ for (col in c("or","or_lci95","or_uci95","lo_ci","up_ci","b","se"))
 res[, is_or := !is.na(or)]
 res[, `:=`(est = fifelse(is_or, or, b), lo = fifelse(is_or, or_lci95, lo_ci),
            hi = fifelse(is_or, or_uci95, up_ci), scale = fifelse(is_or, "OR", "beta"))]
-res[, phenotype := fifelse(exposure == "asthma", outcome, exposure)]
-res[, direction := fifelse(exposure == "asthma",
-                           paste("asthma →", phenotype),
-                           paste(phenotype, "→ asthma"))]
+# Anchor on `anchor`: the "phenotype" is whichever trait is NOT the anchor,
+# and the direction is written relative to the anchor. Strip the "_ofh_meta"
+# suffix for clean labels (POI_ofh_meta -> POI, ANM_ofh_meta -> ANM).
+clean <- function(x) gsub("_ofh_meta$", "", x)
+res <- res[exposure == anchor | outcome == anchor]   # keep only pairs involving the anchor
+res[, phenotype := clean(fifelse(exposure == anchor, outcome, exposure))]
+res[, direction := fifelse(exposure == anchor,
+                           paste(anchor, "→", phenotype),
+                           paste(phenotype, "→", anchor))]
 
 method_map <- c("Inverse variance weighted"="IVW","Weighted median"="Weighted median",
                 "MR Egger"="MR-Egger","mr_ivw_steiger"="IVW-Steiger",
@@ -68,7 +79,7 @@ forest_pheno <- function(d, ph) {
                    position = position_dodge(width = 0.7)) +
     geom_point(position = position_dodge(width = 0.7), size = 2.2) +
     facet_wrap(~ direction, scales = "free_x") +
-    labs(title = paste("MR:", ph, "vs asthma"), x = "Estimate (OR or beta; 95% CI)",
+    labs(title = paste("MR:", anchor, "vs", ph), x = "Estimate (OR or beta; 95% CI)",
          y = NULL, colour = "Instruments") +
     theme_bw(base_size = 12) +
     theme(legend.position = "bottom", panel.grid.minor = element_blank())

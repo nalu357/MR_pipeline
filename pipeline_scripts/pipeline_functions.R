@@ -15,9 +15,18 @@ suppressPackageStartupMessages({
 # (often multi-GB) source file just to decide whether to reuse a cache.
 cache_token <- function(...) {
   x <- paste(vapply(list(...), function(z) paste(z, collapse = "\034"), character(1)), collapse = "\035")
-  bytes <- utf8ToInt(enc2utf8(x)); h <- 0
-  for (b in bytes) h <- (h * 31 + b) %% 2147483647
-  sprintf("%08x", as.integer(h))
+  # A wide (64-bit) key: a collision would silently return the WRONG cached
+  # object (e.g. another pair's harmonised data), so we avoid the previous
+  # ~31-bit rolling hash. Prefer digest::xxhash64; fall back to a
+  # dependency-free double rolling hash (two primes) when digest is absent.
+  if (requireNamespace("digest", quietly = TRUE))
+    return(digest::digest(x, algo = "xxhash64"))
+  bytes <- utf8ToInt(enc2utf8(x)); h1 <- 0; h2 <- 0
+  for (b in bytes) {
+    h1 <- (h1 * 31  + b) %% 2147483647   # 2^31 - 1 (prime)
+    h2 <- (h2 * 129 + b) %% 2147483629   # largest prime < 2^31
+  }
+  sprintf("%08x%08x", as.integer(h1), as.integer(h2))
 }
 
 source_fingerprint <- function(path) {
@@ -37,7 +46,12 @@ cache_path <- function(cache_dir, namespace, key) {
 cache_read <- function(path, label) {
   if (is.null(path) || !file.exists(path)) return(NULL)
   value <- tryCatch(readRDS(path), error = function(e) NULL)
-  if (!is.null(value)) message(sprintf("Cache hit (%s): %s", label, path))
+  if (!is.null(value)) {
+    # Bump mtime so prune_cache() evicts by true recency-of-use (LRU), not just
+    # recency-of-write: entries reused across a grid survive eviction.
+    tryCatch(Sys.setFileTime(path, Sys.time()), error = function(e) NULL)
+    message(sprintf("Cache hit (%s): %s", label, path))
+  }
   value
 }
 
@@ -50,6 +64,36 @@ cache_write <- function(value, path) {
     warning(sprintf("Could not write cache file: %s", path), call. = FALSE)
     return(invisible(FALSE))
   }
+  invisible(TRUE)
+}
+
+#' Bound the on-disk cache with LRU eviction.
+#'
+#' The caches (gwas_subsets/, proxy_substitutions/, harmonized/) otherwise grow
+#' without limit. When the total exceeds `max_gb`, the least-recently-USED files
+#' (oldest mtime; cache_read() refreshes mtime on a hit) are deleted until the
+#' cache is back under the cap. Call once at start-up, before the run reads or
+#' writes anything, so a run never evicts the entries it just created.
+#'
+#' @param cache_dir cache directory (NULL/"" -> no-op).
+#' @param max_gb size cap in GB; NULL/NA/<=0 means unlimited (no eviction).
+prune_cache <- function(cache_dir, max_gb = 20) {
+  if (is.null(cache_dir) || !nzchar(cache_dir) || !dir.exists(cache_dir)) return(invisible(FALSE))
+  if (is.null(max_gb) || is.na(max_gb) || max_gb <= 0) return(invisible(FALSE))
+  files <- list.files(cache_dir, pattern = "\\.rds$", recursive = TRUE, full.names = TRUE)
+  if (length(files) == 0) return(invisible(FALSE))
+  info <- file.info(files)
+  info <- info[!is.na(info$size), , drop = FALSE]
+  total <- sum(info$size); cap <- max_gb * 1024^3
+  if (total <= cap) return(invisible(FALSE))
+  ord <- order(info$mtime)                         # oldest (least recently used) first
+  freed <- 0; removed <- 0L; paths <- rownames(info)
+  for (i in ord) {
+    if (total - freed <= cap) break
+    if (isTRUE(file.remove(paths[i]))) { freed <- freed + info$size[i]; removed <- removed + 1L }
+  }
+  message(sprintf("Cache prune: removed %d least-recently-used file(s) (%.2f GB) to keep '%s' under %g GB.",
+                  removed, freed / 1024^3, cache_dir, max_gb))
   invisible(TRUE)
 }
 
@@ -419,6 +463,160 @@ read_iv_list <- function(file, col = NULL) {
   if (ncol(dt) == 1 && grepl("^(rs[0-9]+|[0-9]+:[0-9]+)", snp_col)) ids <- c(snp_col, ids)
   ids <- unique(ids)
   ids[!is.na(ids) & nzchar(ids)]
+}
+
+#' Read one or more trait "info files" (manifests) into a list of trait specs.
+#'
+#' A manifest is a CSV with one row per trait describing where its GWAS lives and
+#' which columns to use, so the grid driver (mr_grid.R) does not need per-trait
+#' command-line column flags. The expected headers (case-insensitive, dots or
+#' spaces interchangeable) are:
+#'   Short name, file.name, N, Ncases, Population prevalence, Genome build,
+#'   ivs.file, Downloaded,
+#'   chr.col, pos.col, snp.col, ea.col, nea.col, eaf.col, beta.col, se.col, pval.col
+#'
+#' Behaviour:
+#'   * Numbers may carry thousands separators ("408,112") - commas are stripped.
+#'   * A trait is treated as BINARY when Ncases is populated, else CONTINUOUS.
+#'   * Empty eaf.col is fine (dropped, the pipeline tolerates missing EAF).
+#'   * file.name / ivs.file: absolute paths are used as-is, otherwise resolved
+#'     against data_dir.
+#'   * Rows with Downloaded == "no" or an empty file.name are skipped (warning).
+#'   * Genome build maps to an MHC region (b37 default, b38 lifted coordinates)
+#'     used to flag/exclude MHC instruments for that trait as an exposure.
+#'
+#' @param paths character vector of manifest CSV paths (>= 1).
+#' @param data_dir optional base directory to resolve relative file.name/ivs.file.
+#' @param select optional character vector of Short names to keep (NULL = all).
+#'   Requesting a name absent from the manifests is an error.
+#' @param role "exposure"/"outcome", used only for clearer messages.
+#' @return named list (keyed by Short name) of trait specs, each a list with
+#'   name, gwas, ivs, col_args(list), n_total, ncase_total, prevalence, type,
+#'   build, mhc_region.
+read_trait_manifest <- function(paths, data_dir = NULL, select = NULL, role = "trait") {
+  # Normalise a header to a lookup key: lower-case, strip spaces/dots/underscores.
+  norm <- function(x) gsub("[ ._]+", "", tolower(x))
+  # Numeric coercion tolerant of thousands separators and blanks.
+  as_num <- function(x) {
+    x <- gsub(",", "", trimws(as.character(x)))
+    suppressWarnings(ifelse(nzchar(x), as.numeric(x), NA_real_))
+  }
+  blank <- function(x) is.null(x) || is.na(x) || !nzchar(trimws(as.character(x)))
+  resolve <- function(f) {
+    if (blank(f)) return(NA_character_)
+    f <- trimws(as.character(f))
+    if (grepl("^(/|~|[A-Za-z]:)", f) || is.null(data_dir)) f else file.path(data_dir, f)
+  }
+  # b37 extended MHC (default) vs a b38-lifted equivalent window.
+  mhc_for_build <- function(build) {
+    b <- norm(build)
+    if (grepl("38", b)) "6:25726063-33400644" else "6:25000000-34000000"
+  }
+
+  specs <- list()
+  for (p in paths) {
+    if (!file.exists(p)) stop(sprintf("%s info file not found: %s", role, p), call. = FALSE)
+    dt <- data.table::fread(p, header = TRUE, colClasses = "character", na.strings = c("", "NA"))
+    keys <- norm(names(dt))
+    get <- function(row, header) {
+      idx <- which(keys == norm(header))
+      if (length(idx) == 0) return(NA_character_) else as.character(row[[idx[1]]])
+    }
+    need <- c("Short name", "file.name", "snp.col", "ea.col", "nea.col", "beta.col", "se.col", "pval.col")
+    missing_cols <- need[!(norm(need) %in% keys)]
+    if (length(missing_cols))
+      stop(sprintf("%s info file '%s' is missing required column(s): %s",
+                   role, basename(p), paste(missing_cols, collapse = ", ")), call. = FALSE)
+
+    for (i in seq_len(nrow(dt))) {
+      row <- as.list(dt[i])
+      name <- trimws(get(row, "Short name"))
+      if (blank(name)) next
+      downloaded <- norm(get(row, "Downloaded"))
+      gwas <- resolve(get(row, "file.name"))
+      if (identical(downloaded, "no") || is.na(gwas)) {
+        warning(sprintf("Manifest '%s': skipping trait '%s' (Downloaded=%s, file.name=%s).",
+                        basename(p), name, get(row, "Downloaded"), get(row, "file.name")), call. = FALSE)
+        next
+      }
+      col_args <- list(
+        snp  = get(row, "snp.col"),  beta = get(row, "beta.col"), se = get(row, "se.col"),
+        ea   = get(row, "ea.col"),   nea  = get(row, "nea.col"),  p  = get(row, "pval.col"),
+        chr  = if (!blank(get(row, "chr.col"))) get(row, "chr.col") else NULL,
+        pos  = if (!blank(get(row, "pos.col"))) get(row, "pos.col") else NULL,
+        eaf  = if (!blank(get(row, "eaf.col"))) get(row, "eaf.col") else NULL
+      )
+      ncase <- as_num(get(row, "Ncases"))
+      spec <- list(
+        name         = name,
+        gwas         = gwas,
+        ivs          = resolve(get(row, "ivs.file")),
+        col_args     = col_args,
+        n_total      = as_num(get(row, "N")),
+        ncase_total  = if (is.na(ncase)) NULL else ncase,
+        prevalence   = as_num(get(row, "Population prevalence")),
+        type         = if (is.na(ncase)) "continuous" else "binary",
+        build        = get(row, "Genome build"),
+        mhc_region   = mhc_for_build(get(row, "Genome build"))
+      )
+      if (is.na(spec$prevalence)) spec$prevalence <- NULL   # drop -> stays unset downstream
+      specs[[name]] <- spec   # later manifest wins on duplicate Short name
+    }
+  }
+  if (length(specs) == 0) stop(sprintf("No usable %s traits found in: %s", role, paste(paths, collapse = ", ")), call. = FALSE)
+
+  if (!is.null(select)) {
+    select <- trimws(select); select <- select[nzchar(select)]
+    absent <- setdiff(select, names(specs))
+    if (length(absent))
+      stop(sprintf("Requested %s trait(s) not found in the info file(s): %s\nAvailable: %s",
+                   role, paste(absent, collapse = ", "), paste(names(specs), collapse = ", ")), call. = FALSE)
+    specs <- specs[select]
+  }
+  specs
+}
+
+#' Read + select instruments for one exposure (clump/IV-list once, reusable
+#' across many outcomes). Encapsulates the per-exposure block shared by
+#' mr_pipeline.R and mr_grid.R, and writes the <prefix><name>_exposure_ivs.tsv
+#' transparency table.
+#'
+#' @param exposure_file path to the exposure GWAS.
+#' @param exposure_name trait label (used in filenames + results).
+#' @param exp_col_args list(snp,beta,se,ea,nea,p,eaf,n,ncase,chr,pos).
+#' @param opt run-level options (clump_*, ld_ref, plink_bin, f_stat, skip_clump,
+#'   mhc_region, exclude_mhc, tmp_dir, cache_dir, out_prefix, exp_n_total,
+#'   exp_ncase_total).
+#' @param iv_list optional pre-defined instrument IDs (restricts, no clumping).
+#' @return list(ivs_dat = formatted exposure instrument data.frame,
+#'   raw = cleaned full exposure), or NULL if no instruments survived.
+prepare_exposure_instruments <- function(exposure_file, exposure_name, exp_col_args, opt,
+                                         iv_list = NULL) {
+  exposure_raw <- read_gwas(
+    gwas_file = exposure_file, type = "exposure", col_args = exp_col_args,
+    trait_name = exposure_name, tmp_dir = opt$tmp_dir, pval_thresh = opt$clump_p,
+    n_total = opt$exp_n_total, ncase_total = opt$exp_ncase_total, cache_dir = opt$cache_dir)
+  message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
+
+  exposure_ivs_dat <- select_instruments(
+    exposure_raw = exposure_raw, trait_name = exposure_name,
+    clump_p = opt$clump_p, clump_kb = opt$clump_kb, clump_r2 = opt$clump_r2,
+    ld_ref = opt$ld_ref, plink_bin = opt$plink_bin, min_f_stat = opt$f_stat,
+    skip_clump = opt$skip_clump, iv_list = iv_list,
+    mhc_region = opt$mhc_region, exclude_mhc = opt$exclude_mhc)
+  if (!inherits(exposure_ivs_dat, "data.frame") || nrow(exposure_ivs_dat) == 0) return(NULL)
+  message(sprintf("Final selected IVs count: %d", nrow(exposure_ivs_dat)))
+
+  iv_cols <- intersect(
+    c("SNP", "chr.exposure", "pos.exposure", "effect_allele.exposure", "other_allele.exposure",
+      "eaf.exposure", "beta.exposure", "se.exposure", "pval.exposure", "samplesize.exposure",
+      "F_statistic", "mhc"),
+    names(exposure_ivs_dat))
+  data.table::fwrite(
+    data.table::as.data.table(exposure_ivs_dat)[, ..iv_cols],
+    paste0(opt$out_prefix, exposure_name, "_exposure_ivs.tsv"), sep = "\t", na = "NA")
+
+  list(ivs_dat = exposure_ivs_dat, raw = exposure_raw)
 }
 
 #' Resolve the PLINK binary path.
