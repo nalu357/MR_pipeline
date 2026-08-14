@@ -234,11 +234,12 @@ for (cfg in configs) {
         opt_eo$out_snp  <- o$col_args$snp;  opt_eo$out_beta <- o$col_args$beta
         opt_eo$out_se   <- o$col_args$se;   opt_eo$out_ea   <- o$col_args$ea
         opt_eo$out_nea  <- o$col_args$nea
-        # No per-SNP n/ncase columns in a manifest -> rely on the *_total constants.
+        # Per-SNP n/ncase come from the manifest when N/Ncases named a column
+        # (e.g. aam/neb); otherwise they are NULL and the *_total constants apply.
         out_col_args <- list(
           snp = o$col_args$snp, beta = o$col_args$beta, se = o$col_args$se,
           ea = o$col_args$ea, nea = o$col_args$nea, p = o$col_args$p,
-          eaf = o$col_args$eaf, n = NULL, ncase = NULL,
+          eaf = o$col_args$eaf, n = o$col_args$n, ncase = o$col_args$ncase,
           chr = o$col_args$chr, pos = o$col_args$pos)
 
         message(sprintf("\n=== [%s] %s%s -> %s ===", format(Sys.time(), "%T"), cfg$prefix, e$name, o$name))

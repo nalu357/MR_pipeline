@@ -446,7 +446,13 @@ warn_non_rsid_instruments <- function(dat) {
 #'            SNP-like column is auto-detected (else the first column is used).
 #' @return Character vector of unique, non-empty SNP IDs.
 read_iv_list <- function(file, col = NULL) {
-  dt <- data.table::fread(file, header = "auto")
+  if (grepl("\\.xlsx?$", file, ignore.case = TRUE)) {
+    if (!requireNamespace("readxl", quietly = TRUE))
+      stop(sprintf("Instrument list '%s' is an Excel file but package 'readxl' is not installed.", basename(file)), call. = FALSE)
+    dt <- data.table::as.data.table(readxl::read_excel(file, col_types = "text"))
+  } else {
+    dt <- data.table::fread(file, header = "auto")
+  }
   if (!is.null(col)) {
     if (!col %in% names(dt)) {
       stop(sprintf("--exp_ivs_col '%s' not found in %s (columns: %s).",
@@ -467,56 +473,74 @@ read_iv_list <- function(file, col = NULL) {
 
 #' Read one or more trait "info files" (manifests) into a list of trait specs.
 #'
-#' A manifest is a CSV with one row per trait describing where its GWAS lives and
-#' which columns to use, so the grid driver (mr_grid.R) does not need per-trait
-#' command-line column flags. The expected headers (case-insensitive, dots or
-#' spaces interchangeable) are:
+#' A manifest is a CSV/TSV or Excel (.xlsx) table with one row per trait
+#' describing where its GWAS lives and which columns to use, so the grid driver
+#' (mr_grid.R) does not need per-trait command-line column flags. The expected
+#' headers (case-insensitive, dots/spaces/underscores interchangeable) are:
 #'   Short name, file.name, N, Ncases, Population prevalence, Genome build,
 #'   ivs.file, Downloaded,
 #'   chr.col, pos.col, snp.col, ea.col, nea.col, eaf.col, beta.col, se.col, pval.col
 #'
 #' Behaviour:
-#'   * Numbers may carry thousands separators ("408,112") - commas are stripped.
-#'   * A trait is treated as BINARY when Ncases is populated, else CONTINUOUS.
-#'   * Empty eaf.col is fine (dropped, the pipeline tolerates missing EAF).
-#'   * file.name / ivs.file: absolute paths are used as-is, otherwise resolved
-#'     against data_dir.
+#'   * Numbers tolerate thousands separators and stray whitespace ("588,452 ").
+#'   * `N` / `Ncases` may be either a NUMBER (applied as a constant sample size /
+#'     case count) OR the NAME of a per-SNP column in the GWAS - if the value is
+#'     non-numeric text it is taken as a column name.
+#'   * A trait is BINARY when Ncases is populated, else CONTINUOUS.
+#'   * Empty eaf.col / chr.col / pos.col are fine (dropped).
+#'   * file.name / ivs.file: absolute paths used as-is, else resolved vs data_dir.
 #'   * Rows with Downloaded == "no" or an empty file.name are skipped (warning).
-#'   * Genome build maps to an MHC region (b37 default, b38 lifted coordinates)
-#'     used to flag/exclude MHC instruments for that trait as an exposure.
+#'   * A row missing a required per-row value (snp/ea/nea/beta/se/pval col) is
+#'     kept but WARNED about - its MR runs will fail rather than silently mislead.
+#'   * Short names are sanitised for safe filenames (e.g. "FEV1/FVC" -> "FEV1_FVC").
+#'   * Genome build maps to an MHC region (b37 default, b38 lifted coordinates).
 #'
-#' @param paths character vector of manifest CSV paths (>= 1).
+#' @param paths character vector of manifest paths (.csv/.tsv/.txt/.xlsx, >= 1).
 #' @param data_dir optional base directory to resolve relative file.name/ivs.file.
 #' @param select optional character vector of Short names to keep (NULL = all).
 #'   Requesting a name absent from the manifests is an error.
 #' @param role "exposure"/"outcome", used only for clearer messages.
-#' @return named list (keyed by Short name) of trait specs, each a list with
-#'   name, gwas, ivs, col_args(list), n_total, ncase_total, prevalence, type,
-#'   build, mhc_region.
+#' @return named list (keyed by sanitised Short name) of trait specs.
 read_trait_manifest <- function(paths, data_dir = NULL, select = NULL, role = "trait") {
-  # Normalise a header to a lookup key: lower-case, strip spaces/dots/underscores.
   norm <- function(x) gsub("[ ._]+", "", tolower(x))
-  # Numeric coercion tolerant of thousands separators and blanks.
+  # Strip commas AND all whitespace (incl. non-breaking space U+00A0) before parsing.
   as_num <- function(x) {
-    x <- gsub(",", "", trimws(as.character(x)))
+    x <- gsub("[[:space:] ,]+", "", trimws(as.character(x)))
     suppressWarnings(ifelse(nzchar(x), as.numeric(x), NA_real_))
   }
   blank <- function(x) is.null(x) || is.na(x) || !nzchar(trimws(as.character(x)))
+  # Filenames must not contain path separators or other awkward characters.
+  safe_name <- function(x) gsub("[^A-Za-z0-9._+-]+", "_", trimws(x))
   resolve <- function(f) {
     if (blank(f)) return(NA_character_)
     f <- trimws(as.character(f))
     if (grepl("^(/|~|[A-Za-z]:)", f) || is.null(data_dir)) f else file.path(data_dir, f)
   }
-  # b37 extended MHC (default) vs a b38-lifted equivalent window.
   mhc_for_build <- function(build) {
-    b <- norm(build)
-    if (grepl("38", b)) "6:25726063-33400644" else "6:25000000-34000000"
+    if (grepl("38", norm(build))) "6:25726063-33400644" else "6:25000000-34000000"
+  }
+  # A manifest N/Ncases cell is either a constant (number) or a column name (text).
+  # Returns list(total = <numeric or NULL>, col = <colname or NULL>).
+  n_field <- function(v) {
+    if (blank(v)) return(list(total = NULL, col = NULL))
+    num <- as_num(v)
+    if (is.na(num)) list(total = NULL, col = trimws(as.character(v)))
+    else list(total = num, col = NULL)
+  }
+  read_table <- function(p) {
+    if (grepl("\\.xlsx?$", p, ignore.case = TRUE)) {
+      if (!requireNamespace("readxl", quietly = TRUE))
+        stop(sprintf("Manifest '%s' is an Excel file but package 'readxl' is not installed.", basename(p)), call. = FALSE)
+      data.table::as.data.table(readxl::read_excel(p, col_types = "text"))
+    } else {
+      data.table::fread(p, header = TRUE, colClasses = "character", na.strings = c("", "NA"))
+    }
   }
 
   specs <- list()
   for (p in paths) {
     if (!file.exists(p)) stop(sprintf("%s info file not found: %s", role, p), call. = FALSE)
-    dt <- data.table::fread(p, header = TRUE, colClasses = "character", na.strings = c("", "NA"))
+    dt <- read_table(p)
     keys <- norm(names(dt))
     get <- function(row, header) {
       idx <- which(keys == norm(header))
@@ -530,32 +554,46 @@ read_trait_manifest <- function(paths, data_dir = NULL, select = NULL, role = "t
 
     for (i in seq_len(nrow(dt))) {
       row <- as.list(dt[i])
-      name <- trimws(get(row, "Short name"))
-      if (blank(name)) next
+      raw_name <- trimws(get(row, "Short name"))
+      if (blank(raw_name)) next
+      name <- safe_name(raw_name)
+      if (!identical(name, raw_name))
+        warning(sprintf("Manifest '%s': Short name '%s' sanitised to '%s' for filenames.",
+                        basename(p), raw_name, name), call. = FALSE)
       downloaded <- norm(get(row, "Downloaded"))
       gwas <- resolve(get(row, "file.name"))
       if (identical(downloaded, "no") || is.na(gwas)) {
         warning(sprintf("Manifest '%s': skipping trait '%s' (Downloaded=%s, file.name=%s).",
-                        basename(p), name, get(row, "Downloaded"), get(row, "file.name")), call. = FALSE)
+                        basename(p), raw_name, get(row, "Downloaded"), get(row, "file.name")), call. = FALSE)
         next
       }
+      # Required per-row values: warn (don't skip) so selection stays predictable
+      # and the grid's per-pair tryCatch turns any failure into a clear, non-fatal one.
+      req_missing <- c(snp = "snp.col", ea = "ea.col", nea = "nea.col",
+                       beta = "beta.col", se = "se.col", p = "pval.col")
+      req_missing <- names(req_missing)[vapply(unname(req_missing), function(h) blank(get(row, h)), logical(1))]
+      if (length(req_missing))
+        warning(sprintf("Manifest '%s': trait '%s' has empty %s - its MR runs will fail until filled.",
+                        basename(p), raw_name, paste(req_missing, collapse = "/")), call. = FALSE)
+
+      nf <- n_field(get(row, "N")); cf <- n_field(get(row, "Ncases"))
       col_args <- list(
         snp  = get(row, "snp.col"),  beta = get(row, "beta.col"), se = get(row, "se.col"),
         ea   = get(row, "ea.col"),   nea  = get(row, "nea.col"),  p  = get(row, "pval.col"),
         chr  = if (!blank(get(row, "chr.col"))) get(row, "chr.col") else NULL,
         pos  = if (!blank(get(row, "pos.col"))) get(row, "pos.col") else NULL,
-        eaf  = if (!blank(get(row, "eaf.col"))) get(row, "eaf.col") else NULL
+        eaf  = if (!blank(get(row, "eaf.col"))) get(row, "eaf.col") else NULL,
+        n    = nf$col, ncase = cf$col
       )
-      ncase <- as_num(get(row, "Ncases"))
       spec <- list(
         name         = name,
         gwas         = gwas,
         ivs          = resolve(get(row, "ivs.file")),
         col_args     = col_args,
-        n_total      = as_num(get(row, "N")),
-        ncase_total  = if (is.na(ncase)) NULL else ncase,
+        n_total      = nf$total,
+        ncase_total  = cf$total,
         prevalence   = as_num(get(row, "Population prevalence")),
-        type         = if (is.na(ncase)) "continuous" else "binary",
+        type         = if (is.null(cf$total) && is.null(cf$col)) "continuous" else "binary",
         build        = get(row, "Genome build"),
         mhc_region   = mhc_for_build(get(row, "Genome build"))
       )
@@ -566,7 +604,8 @@ read_trait_manifest <- function(paths, data_dir = NULL, select = NULL, role = "t
   if (length(specs) == 0) stop(sprintf("No usable %s traits found in: %s", role, paste(paths, collapse = ", ")), call. = FALSE)
 
   if (!is.null(select)) {
-    select <- trimws(select); select <- select[nzchar(select)]
+    select <- unique(gsub("[^A-Za-z0-9._+-]+", "_", trimws(select)))  # match sanitised keys
+    select <- select[nzchar(select)]
     absent <- setdiff(select, names(specs))
     if (length(absent))
       stop(sprintf("Requested %s trait(s) not found in the info file(s): %s\nAvailable: %s",

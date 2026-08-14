@@ -12,6 +12,7 @@ dependencies:
   - r-data.table
   - r-r.utils        # required by data.table::fread to read .gz files
   - r-digest         # strong (xxhash64) cache keys (pipeline falls back if absent)
+  - r-readxl         # read .xlsx trait manifests / instrument lists
   - r-dplyr
   - r-optparse
   - r-remotes
