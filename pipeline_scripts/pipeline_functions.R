@@ -460,9 +460,23 @@ read_iv_list <- function(file, col = NULL) {
     }
     snp_col <- col
   } else {
-    snp_col <- names(dt)[tolower(names(dt)) %in%
-                           c("snp", "rsid", "rs_id", "variant", "variant_id", "markername")][1]
-    if (is.na(snp_col)) snp_col <- names(dt)[1]
+    # Pick the column that actually holds SNP IDs. Excel exports often have many
+    # blank/duplicated headers (readxl renames them ...2, ...3, ...), so choosing
+    # the FIRST column is unreliable. Score every column by how many values look
+    # like rsIDs (then chr:pos); fall back to a SNP-named column, then column 1.
+    rs_score <- vapply(dt, function(v) sum(grepl("^rs[0-9]+$", trimws(as.character(v)))), integer(1))
+    cp_score <- vapply(dt, function(v) sum(grepl("^([0-9]{1,2}|[XYxy])[:_][0-9]+", trimws(as.character(v)))), integer(1))
+    if (max(rs_score) > 0) {
+      snp_col <- names(dt)[which.max(rs_score)]
+    } else if (max(cp_score) > 0) {
+      snp_col <- names(dt)[which.max(cp_score)]
+    } else {
+      snp_col <- names(dt)[tolower(names(dt)) %in%
+                             c("snp", "rsid", "rs_id", "variant", "variant_id", "markername")][1]
+      if (is.na(snp_col)) snp_col <- names(dt)[1]
+    }
+    message(sprintf("read_iv_list: '%s' -> column '%s' (%d rsID-like values of %d rows).",
+                    basename(file), snp_col, max(rs_score), nrow(dt)))
   }
   ids <- as.character(dt[[snp_col]])
   # Headerless single-column list: the "column name" is really the first ID.
@@ -1250,112 +1264,84 @@ process_mr_results <- function(all_mr_results, opt) {
                    "distortion_pval", "presso_global_pval")
   for (col in ensure_cols) if (!col %in% names(all_mr_results)) all_mr_results[, (col) := NA_real_]
   
-  cur_mr_result <- all_mr_results
-  # Subset IVW and Wald ratio results
-  cur_mr_result.IVW <- cur_mr_result[method == "Inverse variance weighted" & nsnp > 2]
-  cur_mr_result.wald <- cur_mr_result[method == "Wald ratio"]
-  
-  # Prepare output
-  all_mr_results.all <- data.table()
-  
-  # Loop over unique outcome/ancestry combinations
-  for (out in unique(cur_mr_result$outcome)) {
-    for (exp in unique(cur_mr_result[outcome==out, exposure])) {
-      # MR Egger intercept FDR
-      cur_mr_result.MREgger <- cur_mr_result[outcome == out & exposure == exp & method == "MR Egger"]
-      MREgger.sig <- cur_mr_result.MREgger[egger_intercept_pval < 0.05]
-      cur_mr_result.IVW$egger_intercept_pval <- cur_mr_result.MREgger$egger_intercept_pval
-      
-      # Heterogeneity flag
-      #Compute the I2 statistics
-      cur_mr_result.IVW$I2 <- (cur_mr_result.IVW$Q-cur_mr_result.IVW$Q_df)/cur_mr_result.IVW$Q
-      Het.sig <- cur_mr_result.IVW[outcome == out & exposure == exp & I2 > 0.5]
-      
-      # Steiger directionality difference
-      if("mr_ivw_steiger" %in% unique(cur_mr_result$method)){
-        steiger_methods <- c("mr_ivw_steiger", "Inverse variance weighted")
-        steiger_dt <- cur_mr_result[outcome == out & exposure == exp & method %in% steiger_methods, .(b)]
-        Steiger.diff <- length(unique(sign(steiger_dt$b))) > 1
+  # Process each exposure-outcome pair INDEPENDENTLY. (The previous version
+  # mutated the whole IVW table with a single pair's values inside the loop,
+  # which recycled wrong flags across pairs and crashed when the number of
+  # MR-PRESSO rows - PRESSO only runs when IVW p<0.05 - differed from the number
+  # of IVW rows.)
+  get_beta <- function(dt, m) { v <- dt[method == m, b]; if (length(v)) v[1] else NA_real_ }
+  first_or_na <- function(v) if (length(v)) v[1] else NA_real_
+
+  pairs <- unique(all_mr_results[, .(exposure, outcome)])
+  out_rows <- vector("list", nrow(pairs))
+  for (i in seq_len(nrow(pairs))) {
+    exp <- pairs$exposure[i]; out <- pairs$outcome[i]
+    tmp.res <- all_mr_results[exposure == exp & outcome == out]
+    if (nrow(tmp.res) == 0) next
+    has_presso  <- any(grepl("mr_presso", tmp.res$method))
+    has_steiger <- "mr_ivw_steiger" %in% tmp.res$method
+
+    ivw  <- tmp.res[method == "Inverse variance weighted" & nsnp > 2]
+    wald <- tmp.res[method == "Wald ratio"]
+
+    # Pleiotropy: MR-Egger intercept p < 0.05
+    egger_p <- first_or_na(tmp.res[method == "MR Egger", egger_intercept_pval])
+    flag_pleiotropy <- isTRUE(is.finite(egger_p) && egger_p < 0.05)
+
+    # Heterogeneity: I2 = (Q - Q_df)/Q > 0.5 on the IVW row
+    if (nrow(ivw) > 0) {
+      ivw[, I2 := (Q - Q_df) / Q]
+      ivw[, egger_intercept_pval := egger_p]
+      if (has_presso) {
+        ivw[, presso_global_pval := first_or_na(tmp.res[method == "mr_presso_raw", presso_global_pval])]
+        ivw[, presso_distortion_pval := first_or_na(tmp.res[method == "mr_presso_raw", distortion_pval])]
       }
-      else Steiger.diff <- NA
-      
-      # Precompute sensitivity betas for all clusters
-      get_beta <- function(dt, m) if (nrow(dt[method == m]) > 0) dt[method == m, b] else NA
-      
-      tmp.res <- cur_mr_result[outcome == out & exposure == exp]
-      if (nrow(tmp.res) == 0) next
-      
-      # Add presso results
-      if(any(grepl(cur_mr_result$method, pattern = "mr_presso"))){
-        cur_mr_result.IVW$presso_global_pval <- cur_mr_result[method=="mr_presso_raw", presso_global_pval]
-        cur_mr_result.IVW$presso_distortion_pval <- cur_mr_result[method=="mr_presso_raw", distortion_pval]
-      }
-      
-      # Sensitivity betas
-      if(any(grepl(cur_mr_result$method, pattern = "mr_presso")) & "mr_ivw_steiger" %in% unique(cur_mr_result$method)){
-        beta.sensitivity <- list(
-          MRPRESSO = if ("mr_presso_corrected" %in% tmp.res$method) {
-            dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
-            dval <- ifelse(dval == "<0.001", 1e-4, as.numeric(dval))
-            if (!is.na(dval) && dval < 0.05) tmp.res[method == "mr_presso_corrected", b]
-            else tmp.res[method == "mr_presso_raw", b]
-          } else NA,
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median"),
-          Steiger = get_beta(tmp.res, "mr_ivw_steiger")
-        )
-      }
-      else if(!any(grepl(cur_mr_result$method, pattern = "mr_presso")) & "mr_ivw_steiger" %in% unique(cur_mr_result$method)){
-        beta.sensitivity <- list(
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median"),
-          Steiger = get_beta(tmp.res, "mr_ivw_steiger")
-        )
-      }
-      else if(any(grepl(cur_mr_result$method, pattern = "mr_presso")) & !("mr_ivw_steiger" %in% unique(cur_mr_result$method))){
-        beta.sensitivity <- list(
-          MRPRESSO = if ("mr_presso_corrected" %in% tmp.res$method) {
-            dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
-            dval <- ifelse(dval == "<0.001", 1e-4, as.numeric(dval))
-            if (!is.na(dval) && dval < 0.05) tmp.res[method == "mr_presso_corrected", b]
-            else tmp.res[method == "mr_presso_raw", b]
-          } else NA,
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median")
-        )
-      } else {
-        beta.sensitivity <- list(
-          MREgger = get_beta(tmp.res, "MR Egger"),
-          WeightedMedian = get_beta(tmp.res, "Weighted median")
-        )
-      }
-      
-      # Direction concordance
-      ivw_beta <- cur_mr_result.IVW[outcome == out & exposure == exp, b]
-      Prop.SameDir <- sum(sign(unlist(beta.sensitivity)) != sign(ivw_beta), na.rm = TRUE)
-      cur_mr_result.IVW[outcome == out & exposure == exp, DiffDirection := Prop.SameDir != 0]
-      
-      # Combine IVW and Wald for this outcome/pop
-      cur_mr_result.out <- rbind(
-        cur_mr_result.IVW[outcome == out & exposure == exp],
-        cur_mr_result.wald[outcome == out & exposure == exp],
-        fill = TRUE
-      )
-      
-      # Add flags
-      cur_mr_result.out[, FlagPleiotropy := nrow(MREgger.sig) > 0]
-      cur_mr_result.out[, FlagHeterogeneity := nrow(Het.sig) > 0]
-      cur_mr_result.out[, FlagSteiger := Steiger.diff]
-      
-      all_mr_results.all <- rbind(all_mr_results.all, cur_mr_result.out, fill = TRUE)
     }
+    flag_het <- nrow(ivw) > 0 && isTRUE(any(is.finite(ivw$I2) & ivw$I2 > 0.5))
+
+    # Steiger directionality discordance (IVW vs Steiger-filtered IVW disagree in sign)
+    steiger_diff <- NA
+    if (has_steiger) {
+      sgn <- sign(tmp.res[method %in% c("mr_ivw_steiger", "Inverse variance weighted"), b])
+      sgn <- sgn[is.finite(sgn)]
+      steiger_diff <- length(unique(sgn)) > 1
+    }
+
+    # Sensitivity betas -> direction concordance vs IVW
+    presso_beta <- NA_real_
+    if (has_presso) {
+      if ("mr_presso_corrected" %in% tmp.res$method) {
+        dval <- tmp.res[method == "mr_presso_corrected", distortion_pval]
+        dval <- suppressWarnings(first_or_na(ifelse(dval == "<0.001", 1e-4, as.numeric(dval))))
+        presso_beta <- if (!is.na(dval) && dval < 0.05) get_beta(tmp.res, "mr_presso_corrected")
+                       else get_beta(tmp.res, "mr_presso_raw")
+      }
+    }
+    beta.sensitivity <- c(
+      if (has_presso) c(MRPRESSO = presso_beta) else NULL,
+      MREgger = get_beta(tmp.res, "MR Egger"),
+      WeightedMedian = get_beta(tmp.res, "Weighted median"),
+      if (has_steiger) c(Steiger = get_beta(tmp.res, "mr_ivw_steiger")) else NULL
+    )
+    ivw_beta <- if (nrow(ivw) > 0) first_or_na(ivw$b) else NA_real_
+    diff_dir <- sum(sign(unlist(beta.sensitivity)) != sign(ivw_beta), na.rm = TRUE) != 0
+
+    pair.out <- rbind(ivw, wald, fill = TRUE)
+    if (nrow(pair.out) == 0) next
+    pair.out[, DiffDirection := diff_dir]
+    pair.out[, FlagPleiotropy := flag_pleiotropy]
+    pair.out[, FlagHeterogeneity := flag_het]
+    pair.out[, FlagSteiger := steiger_diff]
+    out_rows[[i]] <- pair.out
   }
-  
-  # FDR-adjusted p-value
-  all_mr_results.all[, distortion_pval:=NULL]
-  all_mr_results.all[, p_value_fdr := p.adjust(pval, method = "fdr")]
+
+  all_mr_results.all <- data.table::rbindlist(Filter(Negate(is.null), out_rows), fill = TRUE)
+  if (nrow(all_mr_results.all) > 0) {
+    if ("distortion_pval" %in% names(all_mr_results.all)) all_mr_results.all[, distortion_pval := NULL]
+    all_mr_results.all[, p_value_fdr := p.adjust(pval, method = "fdr")]
+  }
   results_file <- paste0(opt$out_prefix, "all_processed_mr_results.csv")
   data.table::fwrite(all_mr_results.all, results_file, sep = ",", na = "NA")
-  
+
   return(all_mr_results.all)
 }

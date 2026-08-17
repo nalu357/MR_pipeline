@@ -105,6 +105,9 @@ option_list <- list(
 )
 opt <- parse_args(OptionParser(option_list = option_list))
 if (isTRUE(opt$no_cache)) opt$cache_dir <- NULL
+# Print each warning as it happens (with its pair/reason) instead of a deferred
+# "There were N warnings" summary, so a failing pair is obvious in the log.
+options(warn = 1)
 
 # --skip_clump is never appropriate here (the grid decides selection per config).
 opt$skip_clump <- FALSE
@@ -253,9 +256,14 @@ for (cfg in configs) {
   }
 
   # One processed-summary per config (mirrors a single mr_pipeline.R invocation).
+  # Never let summary generation abort the grid - the per-pair _full_mr_results.csv
+  # files are already written by run_mr_analysis().
   if (length(results_cfg) > 0) {
     opt_cfg <- opt; opt_cfg$out_prefix <- cfg_prefix
-    process_mr_results(data.table::rbindlist(results_cfg, fill = TRUE), opt_cfg)
+    tryCatch(
+      process_mr_results(data.table::rbindlist(results_cfg, fill = TRUE), opt_cfg),
+      error = function(err) warning(sprintf("Config '%s': summary (process_mr_results) failed: %s. Per-pair CSVs are still written.",
+                                            ifelse(nzchar(cfg$prefix), cfg$prefix, "lenient"), err$message), call. = FALSE))
   } else {
     warning(sprintf("Config '%s' produced no results.", ifelse(nzchar(cfg$prefix), cfg$prefix, "lenient")), call. = FALSE)
   }
