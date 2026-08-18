@@ -48,14 +48,16 @@ cran_pins <- c(
   data.table = "",
   R.utils    = "",   # required by data.table::fread to read .gz files
   digest     = "",   # strong (xxhash64) cache keys; pipeline falls back if absent
-  readxl     = ""    # read .xlsx trait manifests / instrument lists
+  readxl     = "",   # read .xlsx trait manifests / instrument lists
+  MendelianRandomization = ""   # MVMR-Egger (mr_mvmr.R --egger); optional
 )
 # GitHub packages: value is the git ref (SHA or tag), e.g. "0d1e2f3" or "v0.6.3".
 github_pins <- c(
   "MRCIEU/TwoSampleMR"        = "",
   "MRCIEU/ieugwasr"           = "",
   "MRCIEU/genetics.binaRies"  = "",  # optional PLINK-binary helper
-  "rondolab/MR-PRESSO"        = ""
+  "rondolab/MR-PRESSO"        = "",
+  "WSpiller/MVMR"             = ""    # multivariable MR: conditional F / Q / qhet (mr_mvmr.R)
 )
 # ===========================================================================
 
@@ -100,7 +102,7 @@ for (r in names(github_pins)) install_gh(r, github_pins[[r]])
 # ---- Verify ---------------------------------------------------------------
 cat("\n----- Verifying installation -----\n")
 required <- c("optparse", "dplyr", "data.table", "TwoSampleMR", "ieugwasr", "MRPRESSO")
-optional <- c("genetics.binaRies")
+optional <- c("genetics.binaRies", "MVMR", "MendelianRandomization")
 ok <- TRUE
 for (p in c(required, optional)) {
   present <- requireNamespace(p, quietly = TRUE, lib.loc = lib)

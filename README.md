@@ -273,6 +273,47 @@ Rscript pipeline_scripts/mr_grid.R \
 
 See `run_mr_grid_slurm.sh` for a ready-to-edit SLURM wrapper.
 
+## Multivariable MR — `mr_mvmr.R`
+
+`mr_mvmr.R` estimates the **joint (conditional) effect** of two or more exposures on
+an outcome, using the same manifests. Each invocation is ONE model: every trait in
+`--exposures` goes in together, run against each `--outcomes` trait.
+
+How it works:
+1. **Per-exposure instruments** — each exposure's `ivs.file` (authoritative) or, if none,
+   a clump of its GWAS.
+2. **Pool + re-clump** — union the exposures' instruments, tag each SNP with its minimum
+   p across exposures, and **re-clump the union** (`--clump_r2`, `--clump_kb`) so the
+   combined instrument set is mutually independent (MVMR-IVW assumes this).
+3. **Harmonise** all exposures + the outcome at that set (`mv_harmonise_data`).
+4. **MVMR-IVW** (`TwoSampleMR::mv_multiple`) for the conditional effects, plus **conditional
+   F-statistics** (instrument strength per exposure), **Q / Q-pval** (horizontal pleiotropy),
+   and **qhet** (weak-instrument-robust estimate) from the `MVMR` package; optional
+   **MVMR-Egger** intercept (`--egger`, needs `MendelianRandomization`).
+5. Also emits the **univariate IVW** for each exposure→outcome and a
+   **univariable-vs-multivariable forest**.
+
+```bash
+# asthma + smoking, modelled jointly, on POI and ANM:
+Rscript pipeline_scripts/mr_mvmr.R \
+  --exp_info manifests/read_me_respiratory_traits.xlsx \
+  --out_info manifests/read_me_reproductive_traits.xlsx \
+  --exposures asthma,smoking --outcomes poi,anm \
+  --ld_ref /path/to/Phase3_eur --out_prefix output/mvmr/ \
+  --clump_r2 0.01 --clump_kb 1000 --egger
+# exposures spanning two manifests: pass both to --exp_info (comma-separated)
+#   --exp_info respiratory.xlsx,reproductive.xlsx --exposures asthma,bweight
+# --exclude_mhc drops MHC instruments; --dry_run prints the model and exits
+```
+
+Outputs per model×outcome: `<prefix><expA_expB>_vs_<outcome>_mvmr.csv` (one row per
+exposure: conditional `b/se/pval`, `or`/CI for a binary outcome, `cond_Fstat`, `Qstat`,
+`Qpval`, `b_qhet`, and — with `--egger` — `egger_*`), a combined `_all_mvmr_results.csv`,
+and a `_mvmr_forest.png`. See `run_mr_mvmr_slurm.sh`. Interpretation: a **conditional
+F ≥ 10** per exposure indicates adequate instrument strength; if an exposure's univariate
+effect shrinks toward the null once the other is included, its marginal effect was
+(partly) mediated/confounded by the co-exposure.
+
 ### Limitation
 
 Each manifest row has a single `pval.col`, so a trait that needs a *different* p-value

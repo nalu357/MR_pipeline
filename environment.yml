@@ -1,8 +1,8 @@
 name: mr_env
 # Conda environment for the MR pipeline.
 # CRAN packages + PLINK + a build toolchain come from conda; the GitHub-only
-# packages (TwoSampleMR, ieugwasr, genetics.binaRies, MR-PRESSO) are installed
-# on top by setup_conda_env.sh (they are not on conda-forge).
+# packages (TwoSampleMR, ieugwasr, genetics.binaRies, MR-PRESSO, MVMR) are
+# installed on top by setup_conda_env.sh (they are not on conda-forge).
 channels:
   - conda-forge
   - bioconda
@@ -13,6 +13,7 @@ dependencies:
   - r-r.utils        # required by data.table::fread to read .gz files
   - r-digest         # strong (xxhash64) cache keys (pipeline falls back if absent)
   - r-readxl         # read .xlsx trait manifests / instrument lists
+  - r-mendelianrandomization   # MVMR-Egger (mr_mvmr.R --egger)
   - r-dplyr
   - r-optparse
   - r-remotes

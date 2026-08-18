@@ -32,11 +32,12 @@ conda activate "${ENV_NAME}"
 # 3. Install the GitHub-only R packages into this env's library.
 #    TwoSampleMR pulls in ieugwasr automatically, but we install it explicitly
 #    so the MRCIEU version is used.
-echo "== Installing GitHub R packages (TwoSampleMR, ieugwasr, genetics.binaRies, MR-PRESSO) =="
+echo "== Installing GitHub R packages (TwoSampleMR, ieugwasr, genetics.binaRies, MR-PRESSO, MVMR) =="
 Rscript -e '
 options(repos = "https://cloud.r-project.org", Ncpus = max(1, parallel::detectCores()))
 pkgs <- c("MRCIEU/ieugwasr", "MRCIEU/TwoSampleMR",
-          "MRCIEU/genetics.binaRies", "rondolab/MR-PRESSO")
+          "MRCIEU/genetics.binaRies", "rondolab/MR-PRESSO",
+          "WSpiller/MVMR")   # MVMR: conditional F / Q / qhet for mr_mvmr.R
 for (p in pkgs) remotes::install_github(p, upgrade = "never")
 '
 
