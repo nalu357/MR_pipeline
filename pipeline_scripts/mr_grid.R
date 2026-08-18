@@ -67,7 +67,9 @@ option_list <- list(
   make_option("--bidirectional", action = "store_true", default = FALSE,
               help = "Also run outcome-traits-as-exposures (reverse direction) for every pair."),
   make_option("--sensitivity_grid", action = "store_true", default = FALSE,
-              help = "Run all 4 configs per pair: lenient (ivs.file) / strict (r2=0.001) x with / without MHC. Output prefixes: '', 'rigid_', 'noMHC_', 'noMHC_rigid_'."),
+              help = "Run the 4 configs per pair: lenient (ivs.file) / strict (r2=0.001) x with / without MHC. Output prefixes: '', 'rigid_', 'noMHC_', 'noMHC_rigid_'."),
+  make_option("--configs", type = "character", default = NULL,
+              help = "With --sensitivity_grid, restrict to a comma list of config names: lenient, strict, lenient_noMHC, strict_noMHC (default: all 4). E.g. 'lenient,lenient_noMHC' runs only the two lenient arms."),
   make_option("--dry_run", action = "store_true", default = FALSE,
               help = "Print the resolved traits and the grid that WOULD run, then exit without running MR."),
   # ---- Output ----
@@ -152,13 +154,22 @@ out_specs <- read_trait_manifest(split_csv(opt$out_info), data_dir = opt$data_di
 # use_ivs=FALSE -> force re-clump at clump_r2 (the "strict"/robustness configs).
 if (isTRUE(opt$sensitivity_grid)) {
   configs <- list(
-    list(prefix = "",             use_ivs = TRUE,  clump_r2 = 0.2,   exclude_mhc = FALSE),
-    list(prefix = "rigid_",       use_ivs = FALSE, clump_r2 = 0.001, exclude_mhc = FALSE),
-    list(prefix = "noMHC_",       use_ivs = TRUE,  clump_r2 = 0.2,   exclude_mhc = TRUE),
-    list(prefix = "noMHC_rigid_", use_ivs = FALSE, clump_r2 = 0.001, exclude_mhc = TRUE))
+    list(name = "lenient",      prefix = "",             use_ivs = TRUE,  clump_r2 = 0.2,   exclude_mhc = FALSE),
+    list(name = "strict",       prefix = "rigid_",       use_ivs = FALSE, clump_r2 = 0.001, exclude_mhc = FALSE),
+    list(name = "lenient_noMHC", prefix = "noMHC_",      use_ivs = TRUE,  clump_r2 = 0.2,   exclude_mhc = TRUE),
+    list(name = "strict_noMHC", prefix = "noMHC_rigid_", use_ivs = FALSE, clump_r2 = 0.001, exclude_mhc = TRUE))
+  if (!is.null(opt$configs)) {
+    want <- trimws(strsplit(opt$configs, ",")[[1]]); want <- want[nzchar(want)]
+    valid <- vapply(configs, `[[`, "", "name")
+    bad <- setdiff(want, valid)
+    if (length(bad))
+      stop(sprintf("--configs: unknown config name(s): %s. Valid: %s",
+                   paste(bad, collapse = ", "), paste(valid, collapse = ", ")), call. = FALSE)
+    configs <- Filter(function(c) c$name %in% want, configs)
+  }
 } else {
   configs <- list(
-    list(prefix = "", use_ivs = TRUE, clump_r2 = opt$clump_r2, exclude_mhc = isTRUE(opt$exclude_mhc)))
+    list(name = "single", prefix = "", use_ivs = TRUE, clump_r2 = opt$clump_r2, exclude_mhc = isTRUE(opt$exclude_mhc)))
 }
 
 # Directions: forward always; reverse only with --bidirectional.
