@@ -122,10 +122,11 @@ prune_cache <- function(cache_dir, max_gb = 20) {
 read_gwas <- function(gwas_file, type = "exposure", col_args,
                       trait_name = NULL, tmp_dir = "./tmp_pipeline",
                       keep_snps = NULL, pval_thresh = NULL, n_total = NULL, ncase_total = NULL,
-                      cache_dir = NULL) {
+                      cache_dir = NULL, iv_keep = NULL) {
 
   gwas_cache_key <- cache_token(source_fingerprint(gwas_file), type, unlist(col_args, use.names = TRUE),
-                                trait_name, sort(unique(keep_snps)), pval_thresh, n_total, ncase_total)
+                                trait_name, sort(unique(keep_snps)), pval_thresh, n_total, ncase_total,
+                                sort(unique(iv_keep)))
   gwas_cache_file <- cache_path(cache_dir, "gwas_subsets", gwas_cache_key)
   cached <- cache_read(gwas_cache_file, "cleaned GWAS subset")
   if (!is.null(cached)) return(data.table::as.data.table(cached))
@@ -218,9 +219,20 @@ read_gwas <- function(gwas_file, type = "exposure", col_args,
   if (!is.null(pval_thresh) && pval_thresh < 1 && "pval" %in% names(dt)) {
     rows_before <- nrow(dt)
     pv <- suppressWarnings(as.numeric(dt$pval))
-    dt <- dt[!is.na(pv) & pv < pval_thresh]
-    message(sprintf("Pre-filtered to pval < %g: %d of %d rows retained.",
-                    pval_thresh, nrow(dt), rows_before))
+    keep <- !is.na(pv) & pv < pval_thresh
+    # A pre-defined instrument list (--exp_ivs) is authoritative: never drop a
+    # listed SNP just because it is sub-threshold in THIS GWAS. Keep it alongside
+    # the genome-wide-significant pool (the latter still serves LD-proxy search).
+    n_iv_sub <- 0L
+    if (!is.null(iv_keep)) {
+      in_list <- dt$SNP %in% iv_keep
+      n_iv_sub <- sum(in_list & !keep)
+      keep <- keep | in_list
+    }
+    dt <- dt[keep]
+    message(sprintf("Pre-filtered to pval < %g: %d of %d rows retained%s.",
+                    pval_thresh, nrow(dt), rows_before,
+                    if (n_iv_sub > 0) sprintf(" (incl. %d sub-threshold --exp_ivs SNPs kept)", n_iv_sub) else ""))
     if (nrow(dt) == 0) {
       stop(sprintf("No SNPs with pval < %g in %s.", pval_thresh, basename(gwas_file)), call. = FALSE)
     }
@@ -648,7 +660,8 @@ prepare_exposure_instruments <- function(exposure_file, exposure_name, exp_col_a
   exposure_raw <- read_gwas(
     gwas_file = exposure_file, type = "exposure", col_args = exp_col_args,
     trait_name = exposure_name, tmp_dir = opt$tmp_dir, pval_thresh = opt$clump_p,
-    n_total = opt$exp_n_total, ncase_total = opt$exp_ncase_total, cache_dir = opt$cache_dir)
+    n_total = opt$exp_n_total, ncase_total = opt$exp_ncase_total, cache_dir = opt$cache_dir,
+    iv_keep = iv_list)   # keep listed instruments even if sub-threshold in this GWAS
   message(sprintf("Successfully read exposure data for trait '%s'.", exposure_name))
 
   exposure_ivs_dat <- select_instruments(
@@ -724,22 +737,39 @@ select_instruments <- function(exposure_raw, trait_name,
   exposure_raw <- data.table::as.data.table(exposure_raw)
   n_input <- nrow(exposure_raw)
   
-  # 1. Candidate instruments: p < clump_p
+  # 1. Candidate instruments: p < clump_p (drives clumping / skip-clump; a
+  #    pre-defined --exp_ivs list does NOT require the p threshold, see below).
   candidates <- exposure_raw[!is.na(pval) & pval < clump_p]
-  if (nrow(candidates) == 0) {
-    stop(sprintf("No SNPs found below the significance threshold p < %g.", clump_p), call. = FALSE)
+  if (is.null(iv_list)) {
+    if (nrow(candidates) == 0) {
+      stop(sprintf("No SNPs found below the significance threshold p < %g.", clump_p), call. = FALSE)
+    }
+    message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(candidates), clump_p))
+    warn_non_rsid_instruments(candidates)
   }
-  message(sprintf("Found %d SNPs below p-value threshold %g.", nrow(candidates), clump_p))
-  warn_non_rsid_instruments(candidates)
 
   # 2. Independence: pre-defined list, LD clump (default), or skip.
   if (!is.null(iv_list)) {
-    selected_snps <- intersect(candidates$SNP, iv_list)
-    if (length(selected_snps) == 0) {
-      stop("None of the pre-defined instruments (--exp_ivs) are present in the exposure at p<clump_p.", call. = FALSE)
+    # A pre-defined instrument list is AUTHORITATIVE: use every listed SNP that is
+    # PRESENT in the exposure sumstats (with beta/se), regardless of whether it
+    # reaches clump_p in this particular GWAS (a published instrument is often
+    # sub-threshold in a smaller or lifted-over file). No clumping (the list is
+    # assumed independent at r2<0.001); the F-statistic filter below still guards
+    # against weak instruments.
+    ivs_raw <- exposure_raw[SNP %in% iv_list]
+    n_listed <- length(unique(iv_list)); n_present <- length(unique(ivs_raw$SNP))
+    if (n_present == 0) {
+      stop("None of the pre-defined instruments (--exp_ivs) are present in the exposure sumstats (check the SNP-ID column and genome build).", call. = FALSE)
     }
-    message(sprintf("Using %d pre-defined instruments present in the exposure (of %d listed).",
-                    length(selected_snps), length(unique(iv_list))))
+    warn_non_rsid_instruments(ivs_raw)
+    pv <- suppressWarnings(as.numeric(ivs_raw$pval)); n_sub <- sum(is.na(pv) | pv >= clump_p)
+    message(sprintf("Using %d of %d pre-defined instruments present in the exposure (%d not found in the sumstats).",
+                    n_present, n_listed, n_listed - n_present))
+    if (n_sub > 0) {
+      message(sprintf("  Note: %d of the %d present have p >= %g here; kept because --exp_ivs is authoritative (F>=%g still enforced).",
+                      n_sub, n_present, clump_p, min_f_stat))
+    }
+    selected_snps <- unique(ivs_raw$SNP)
     warning("--exp_ivs: instruments taken as given (no clumping). Ensure the list is independent at MR standard (r2<0.001).", call. = FALSE)
   } else if (skip_clump) {
     warning("--skip_clump: treating inputs as already independent at MR standard (r2<0.001). ",
@@ -770,8 +800,10 @@ select_instruments <- function(exposure_raw, trait_name,
     message(sprintf("Identified %d independent instruments after clumping.", length(selected_snps)))
   }
   
-  # 3. Format ONLY the selected instruments (small set -> no stack blow-up)
-  ivs_raw <- candidates[SNP %in% selected_snps]
+  # 3. Format ONLY the selected instruments (small set -> no stack blow-up).
+  #    For --exp_ivs, ivs_raw was already taken from the full present list above;
+  #    for clump / skip-clump it comes from the p<clump_p candidates.
+  if (is.null(iv_list)) ivs_raw <- candidates[SNP %in% selected_snps]
   exposure_ivs_dat <- format_gwas(ivs_raw, type = "exposure", trait_name = trait_name)
   
   # 4. F-statistic (F = beta^2 / se^2; needs no sample size) and filter
@@ -789,12 +821,19 @@ select_instruments <- function(exposure_raw, trait_name,
   # 5. Flag / optionally drop MHC instruments (long-range LD + pleiotropy)
   exposure_ivs_dat <- flag_mhc_instruments(exposure_ivs_dat, mhc_region, exclude_mhc)
 
-  sel_desc <- if (!is.null(iv_list)) "from --exp_ivs list" else if (skip_clump) "kept (no clump)" else sprintf("clumped (r2<%g, %dkb)", clump_r2, clump_kb)
-  message(sprintf(
-    "Instrument attrition: %d input -> %d candidates (p<%g) -> %d %s -> %d after F>=%g%s.",
-    n_input, nrow(candidates), clump_p, length(selected_snps), sel_desc,
-    nrow(exposure_ivs_dat), min_f_stat,
-    if (!exclude_mhc && "mhc" %in% names(exposure_ivs_dat)) sprintf(" (incl. %d MHC flagged)", sum(exposure_ivs_dat$mhc)) else ""))
+  if (!is.null(iv_list)) {
+    message(sprintf(
+      "Instrument attrition: %d listed -> %d present in sumstats -> %d after F>=%g%s.",
+      length(unique(iv_list)), length(selected_snps), nrow(exposure_ivs_dat), min_f_stat,
+      if (!exclude_mhc && "mhc" %in% names(exposure_ivs_dat)) sprintf(" (incl. %d MHC flagged)", sum(exposure_ivs_dat$mhc)) else ""))
+  } else {
+    sel_desc <- if (skip_clump) "kept (no clump)" else sprintf("clumped (r2<%g, %dkb)", clump_r2, clump_kb)
+    message(sprintf(
+      "Instrument attrition: %d input -> %d candidates (p<%g) -> %d %s -> %d after F>=%g%s.",
+      n_input, nrow(candidates), clump_p, length(selected_snps), sel_desc,
+      nrow(exposure_ivs_dat), min_f_stat,
+      if (!exclude_mhc && "mhc" %in% names(exposure_ivs_dat)) sprintf(" (incl. %d MHC flagged)", sum(exposure_ivs_dat$mhc)) else ""))
+  }
   message("----- Finished Selecting Instruments -----")
   
   return(exposure_ivs_dat)
