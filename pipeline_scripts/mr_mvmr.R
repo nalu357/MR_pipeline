@@ -174,6 +174,10 @@ message(sprintf("Wrote combined results: %s%s_all_mvmr_results.csv", opt$out_pre
 if (!isTRUE(opt$no_plot) && requireNamespace("ggplot2", quietly = TRUE)) {
   suppressPackageStartupMessages(library(ggplot2))
   p <- combined[!is.na(b)]
+  # Ensure both the OR (binary-outcome) and beta-CI (continuous-outcome) columns
+  # exist, so an all-continuous or all-binary run doesn't crash on a missing col.
+  for (col in c("or", "or_lci95", "or_uci95", "lo_ci", "up_ci"))
+    if (!col %in% names(p)) p[, (col) := NA_real_]
   p[, is_or := !is.na(or)]
   p[, est := fifelse(is_or, or, b)]
   p[, lo  := fifelse(is_or, or_lci95, lo_ci)]
